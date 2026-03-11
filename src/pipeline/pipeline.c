@@ -63,7 +63,7 @@ static gpointer loop_thread_func(gpointer data)
             GError *err = NULL;
             gchar  *dbg = NULL;
             gst_message_parse_error(msg, &err, &dbg);
-            LOG_ERROR(MOD "GstError: %s | debug: %s",
+            LOG_ERROR(MOD, "GstError: %s | debug: %s",
                 err ? err->message : "?",
                 dbg ? dbg : "none"
             );
@@ -95,14 +95,12 @@ static gpointer loop_thread_func(gpointer data)
 
         case GST_MESSAGE_STATE_CHANGED: {
             if (GST_MESSAGE_SRC(msg) == GST_OBJECT(ctx->pipeline)) {
-                GetState old_s, new_s, pending;
+                GstState old_s, new_s, pending;
                 gst_message_parse_state_changed(msg, &old_s, &new_s, &pending);
                 LOG_INFO(MOD, "State: %s -> %s (pending: %s)",
-                    gst_element_state_get_name(old_s);
-                    gst_element_state_get_name(new_s);
-                    gst_element_state_get_name(pending);
-                
-                )
+                    gst_element_state_get_name(old_s),
+                    gst_element_state_get_name(new_s),
+                    gst_element_state_get_name(pending));
             }
             break;
         }
@@ -111,13 +109,14 @@ static gpointer loop_thread_func(gpointer data)
             /* QoS drops indicate network/CPU pressure */
             gboolean live;
             guint64  run_time, stream_time, timestamp, duration;
-            gdouble  jitter, proportion;
+            gint64  jitter;
+            gdouble proportion;
             gint     quality;
             gst_message_parse_qos(msg, &live, &run_time, &stream_time,
                               &timestamp, &duration);
             gst_message_parse_qos_values(msg, &jitter, &proportion, &quality);
             LOG_WARN(MOD, "QoS drop: jitter=%.1fms proportion=%.2f quality=%d",
-                 jitter / 1e6, proportion, quality);
+                 jitter / 1000000.0, proportion, quality);
             break;
         }
 
@@ -177,7 +176,7 @@ static gboolean stats_timer_cb(gpointer data)
 PipelineCtx *pipeline_create(const StreamConfig *cfg,
                                 PipelineErrorCb on_error,
                                 PipelineEosCb   on_eos,
-                                PipelineStatsCb on_stats
+                                PipelineStatsCb on_stats,
                                 void            *userdata)
 {
     if(!cfg) return NULL;
