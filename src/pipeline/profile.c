@@ -87,7 +87,7 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
 
     /* [sink] */
     kf_str(kf, "sink", "hdmi",    p->sink_hdmi,    sizeof(p->sink_hdmi),    "kmssink");
-    kf_str(kf, "sink", "display", p->sink_display, sizeof(p->sink_display), "autovideosink");
+    kf_str(kf, "sink", "display", p->sink_deploy,  sizeof(p->sink_deploy),  "autovideosink");
 
     /* [network] */
     p->rtp_pt_h265  = kf_int(kf, "network", "rtp_pt_h265",  96);
@@ -119,7 +119,7 @@ void profile_dump(const DeviceProfile *p)
     LOG_DEBUG(MOD, "  dec H265    : %s %s", p->dec_element[CODEC_H265], p->dec_extra[CODEC_H265]);
     LOG_DEBUG(MOD, "  dec H264    : %s %s", p->dec_element[CODEC_H264], p->dec_extra[CODEC_H264]);
     LOG_DEBUG(MOD, "  sink hdmi   : %s", p->sink_hdmi);
-    LOG_DEBUG(MOD, "  sink display: %s", p->sink_display);
+    LOG_DEBUG(MOD, "  sink display: %s", p->sink_deploy);
     LOG_DEBUG(MOD, "  port stream : %d  rtsp: %d", p->stream_port, p->rtsp_port);
     LOG_DEBUG(MOD, "  peer host   : %s  client: %s", p->peer_ip_host, p->peer_ip_client);
 }

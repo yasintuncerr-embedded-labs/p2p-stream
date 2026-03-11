@@ -170,7 +170,6 @@ typedef struct {SmState next; void (*action)(StreamSM *sm); } Transition;
 
 static void do_net_check(StreamSM *sm) { enter_net_check(sm); }
 static void do_ready(StreamSM *sm) { enter_ready(sm); }
-static void do_streaming(StreamSM *sm) { enter_streaming(sm); }
 static void do_recover(StreamSM *sm) { enter_recover(sm); }
 static void do_idle_stop(StreamSM *sm) { enter_idle(sm, 1); }
 static void do_idle_fail(StreamSM *sm) { enter_idle(sm, 0); }
