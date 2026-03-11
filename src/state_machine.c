@@ -109,6 +109,8 @@ static void enter_ready(StreamSM *sm)
         return;
     }
     sm->retry_count = 0;
+    /* Pipeline ready — kick off streaming */
+    sm_post_event(sm, SM_EVT_START);
 }
 
 
@@ -169,20 +171,21 @@ static void enter_idle(StreamSM *sm, int log_reason)
 typedef struct {SmState next; void (*action)(StreamSM *sm); } Transition;
 
 static void do_net_check(StreamSM *sm) { enter_net_check(sm); }
-static void do_ready(StreamSM *sm) { enter_ready(sm); }
-static void do_recover(StreamSM *sm) { enter_recover(sm); }
+static void do_ready(StreamSM *sm)     { enter_ready(sm); }
+static void do_streaming(StreamSM *sm) { enter_streaming(sm); }
+static void do_recover(StreamSM *sm)   { enter_recover(sm); }
 static void do_idle_stop(StreamSM *sm) { enter_idle(sm, 1); }
 static void do_idle_fail(StreamSM *sm) { enter_idle(sm, 0); }
 
 /* [current_state][event] → {next_state, action_fn} */
 static const Transition s_trans[SM_STATE_COUNT][SM_EVT_COUNT] = {
-/* START                            STOP                            NET_OK                      NET_FAIL                        STREAM_ERR                      STREAM_EOS                      RECOVER_OK                      RECOVER_FAIL */
-{{SM_STATE_NET_CHECK,do_net_check}, {-1,NULL},                      {-1,NULL},                  {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* IDLE      */
-{{-1,NULL},                         {SM_STATE_IDLE,do_idle_stop},   {SM_STATE_READY,do_ready},  {SM_STATE_IDLE,do_idle_fail},   {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* NET_CHECK */
-{{-1,NULL},                         {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                  {SM_STATE_RECOVER,do_recover},  {SM_STATE_RECOVER,do_recover},  {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* READY     */
-{{-1,NULL},                         {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                  {SM_STATE_RECOVER,do_recover},  {SM_STATE_RECOVER,do_recover},  {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {-1,NULL}},                     /* STREAMING */
-{{-1,NULL},                         {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                  {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* ERROR     */
-{{-1,NULL},                         {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                  {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {SM_STATE_READY,do_ready},      {SM_STATE_IDLE,do_idle_fail}},  /* RECOVER   */
+/* START                                    STOP                            NET_OK                          NET_FAIL                        STREAM_ERR                      STREAM_EOS                      RECOVER_OK                      RECOVER_FAIL */
+{{SM_STATE_NET_CHECK, do_net_check},        {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* IDLE      */
+{{-1,NULL},                                 {SM_STATE_IDLE,do_idle_stop},   {SM_STATE_READY,do_ready},      {SM_STATE_IDLE,do_idle_fail},   {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* NET_CHECK */
+{{SM_STATE_STREAMING, do_streaming},        {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {SM_STATE_RECOVER,do_recover},  {SM_STATE_RECOVER,do_recover},  {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* READY     */
+{{-1,NULL},                                 {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {SM_STATE_RECOVER,do_recover},  {SM_STATE_RECOVER,do_recover},  {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {-1,NULL}},                     /* STREAMING */
+{{-1,NULL},                                 {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL}},                     /* ERROR     */
+{{-1,NULL},                                 {SM_STATE_IDLE,do_idle_stop},   {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {-1,NULL},                      {SM_STATE_READY,do_ready},      {SM_STATE_IDLE,do_idle_fail}},  /* RECOVER   */
 };
 
 /* -----------------------------------------------------------------------
