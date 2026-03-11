@@ -54,9 +54,16 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
                 "videotestsrc pattern=ball is-live=true "
         );
     } else {
-        pcat(s_pipe_buf, HOST_PIPE_BUF,
-            "%s device=%s io-mode=4 ", /* trailing space keeps '!' separate */
-            p->src_element, p->camera_device);
+        int is_libcamera = (strncmp(p->src_element, "libcamera", 9) == 0);
+        if (is_libcamera) {
+            /* libcamerasrc does not accept device= or io-mode= */
+            pcat(s_pipe_buf, HOST_PIPE_BUF,
+                "%s ", p->src_element);
+        } else {
+            pcat(s_pipe_buf, HOST_PIPE_BUF,
+                "%s device=%s io-mode=4 ", /* trailing space keeps '!' separate */
+                p->src_element, p->camera_device);
+        }
     }
 
     /* -- 2. Source caps -------------------------------------------- */
