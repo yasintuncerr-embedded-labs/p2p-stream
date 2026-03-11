@@ -17,12 +17,12 @@ add_compile_options(
 # ── Find GStreamer via pkg-config ─────────────────────────────────────────
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(GST      REQUIRED gstreamer-1.0>=1.16)
-pkg_check_modules(GST_APP  REQUIRED gstreamer-app-1.0)
-pkg_check_modules(GLIB     REQUIRED glib-2.0)
+pkg_check_modules(GST      REQUIRED IMPORTED_TARGET gstreamer-1.0>=1.16)
+pkg_check_modules(GST_APP  REQUIRED IMPORTED_TARGET gstreamer-app-1.0)
+pkg_check_modules(GLIB     REQUIRED IMPORTED_TARGET glib-2.0)
 
 # Optional: gst-rtsp-server for SINK_RTSP
-pkg_check_modules(GST_RTSP gstreamer-rtsp-server-1.0)
+pkg_check_modules(GST_RTSP IMPORTED_TARGET gstreamer-rtsp-server-1.0)
 
 
 
@@ -53,10 +53,10 @@ target_include_directories(p2p-stream PRIVATE
 
 
 # ── Link libraries ────────────────────────────────────────────────────────
-target_link_libraries(p2p-stream
-    ${GST_LIBRARIES}
-    ${GST_APP_LIBRARIES}
-    ${GLIB_LIBRARIES}
+target_link_libraries(p2p-stream PRIVATE
+    PkgConfig::GST
+    PkgConfig::GST_APP
+    PkgConfig::GLIB
     pthread
     m
 )
@@ -64,19 +64,12 @@ target_link_libraries(p2p-stream
 
 if(GST_RTSP_FOUND)
     target_include_directories(p2p-stream PRIVATE ${GST_RTSP_INCLUDE_DIRS})
-    target_link_libraries(p2p-stream ${GST_RTSP_LIBRARIES})
+    target_link_libraries(p2p-stream PRIVATE PkgConfig::GST_RTSP)
     target_compile_definitions(p2p-stream PRIVATE HAVE_GST_RTSP_SERVER)
     message(STATUS "gst-rtsp-server: FOUND — RTSP sink enabled")
 else()
     message(WARNING "gst-rtsp-server: NOT FOUND — RTSP sink will be limited")
 endif()
-
-
-# ── Link flags (pkg-config) ───────────────────────────────────────────────
-target_link_options(p2p-stream PRIVATE
-    ${GST_LDFLAGS}
-    ${GLIB_LDFLAGS}
-)
 
 
 
