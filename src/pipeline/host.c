@@ -17,13 +17,13 @@
  * ----------------------------------------------------------------------------
 */
 
-#define PIPE_BUF 2048
+#define HOST_PIPE_BUF 2048
 
-static char s_pipe_buf[PIPE_BUF];
+static char s_pipe_buf[HOST_PIPE_BUF];
 
 /* Helper: append to buffer with bounds check */
 static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)))
+    __attribute__((format(printf, 3, 4)));
 
 static int pcat(char *buf, size_t bufsz, const char *fmt, ...) 
 {
@@ -49,11 +49,11 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
 
     /* -- 1. Source -------------------------------------------------- */
     if (cfg->use_test_pattern) {
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
                 "videotestsrc pattern ball is-live=true"
         );
     } else {
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
             "%s device=%s io-mode=4", /* io-mode=: dmabuf-import    */
             p->src_element, p->camera_device);
     }
@@ -65,10 +65,10 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
 
     /* -- 3. Optional Colorspace convert(needed for SW encoders)----- */
     if (p->need_convert || cfg->use_test_pattern) {
-        pcat(s_pipe_buf, PIPE_BUF, "! videoconvert");
+        pcat(s_pipe_buf, HOST_PIPE_BUF, "! videoconvert");
         /* Re-force format after convert - some encoders need explicit NV12 */
         if(!cfg->use_test_pattern) {
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, HOST_PIPE_BUF,
                 "! video/x-raw,format=NV12,width=%d,height=%d",
                 cfg->width, cfg->height
             );
@@ -80,32 +80,32 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
     const char *enc_extra = p->enc_extra[cod];
 
     if (cod == CODEC_H265) {
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
         "! %s bitrate=%d %s",
         enc_elem, enc_bitrate,
         enc_extra[0]? enc_extra : ""
         );
         /* Parse / slice header insertion for RTP */
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! h265parse config-interval=-1 ");
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! rtph265pay config-interval=1 pt=%d mtu=1316 ",
              p->rtp_pt_h265);
     } else {
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! %s bitrate=%d %s ",
              enc_elem, enc_bitrate,
              enc_extra[0] ? enc_extra : "");
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! h264parse config-interval=-1 ");
-        pcat(s_pipe_buf, PIPE_BUF,
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! rtph264pay config-interval=1 pt=%d mtu=1316 ",
              p->rtp_pt_h264);
     }
 
     /* -- 5. UDP Sink -------------------------------------------- */
     pcat(s_pipe_buf, PIPE_BUF,
-        "! udpsink host=%s port=%d sync=false, async=false",
+        "! udpsink host=%s port=%d sync=false async=false",
         cfg->peer_ip, p->stream_port);
     
     LOG_INFO(MOD, "Pipeline: %s", s_pipe_buf);

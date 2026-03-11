@@ -5,9 +5,9 @@
 #include <stdarg.h>
 
 #define MOD       "CLIENT-PIPE"
-#define PIPE_BUF  2048
+#define CLIENT_PIPE_BUF  2048
 
-static char s_pipe_buf[PIPE_BUF];
+static char s_pipe_buf[CLIENT_PIPE_BUF];
 
 static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
@@ -55,9 +55,9 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
 
     /* -- 2. RTP depayloader + parser --------------------------- */
     if (cod == CODEC_H265) {
-        pcat(s_pipe_buf, PIPE_BUF, "! rtph265depay ! h265parse ");
+        pcat(s_pipe_buf, CLIENT_PIPE_BUF, "! rtph265depay ! h265parse ");
     } else {
-        pcat(s_pipe_buf, PIPE_BUF, "! rtph264depay ! h264parse ");
+        pcat(s_pipe_buf, CLIENT_PIPE_BUF, "! rtph264depay ! h264parse ");
     }
 
     /* -- 3. Sink branch ------------------------------------------ */
@@ -66,10 +66,10 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
         case SINK_HDMI: {
             const char *dec_elem = p->dec_element[cod];
             const char *dec_extra = p->dec_extra[cod];
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF,
             "! %s %s ",
             dec_elem, dec_extra[0] ? dec_extra : "");
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF,
             "! %s sync=false",
             p->sink_hdmi);
             break;
@@ -79,11 +79,11 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
         case SINK_DISPLAY: {
             const char *dec_elem  = p->dec_element[cod];
             const char *dec_extra = p->dec_extra[cod];
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF,
             "! %s %s ! videoconvert ! %s sync=false",
             dec_elem,
             dec_extra[0] ? dec_extra : "",
-            p->sink_display);
+            p->sink_deploy);
             break;
         }
 
@@ -94,7 +94,7 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
             const char *muxer = (cod == CODEC_H265) ? "mp4mux" : "mp4mux";
             /* h265 in MP4: needs mp4mux with allow-signed-integer-overflow=1
              * for some GStreamer versions — handled in mp4mux properties    */
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF,
              "! %s faststart=true ! filesink location=%s sync=false",
              muxer,
              cfg->file_path[0] ? cfg->file_path : "/tmp/p2p-record.mp4");
@@ -109,7 +109,7 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
          *       separately (see rtsp_server.c).
          *       Here we use rtspclientsink for push-to-server mode.         */
         case SINK_RTSP: {
-            pcat(s_pipe_buf, PIPE_BUF,
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF,
             "! rtspclientsink location=rtsp://127.0.0.1:%d/stream latency=0",
             cfg->rtsp_port);
             LOG_INFO(MOD, "RTSP sink: rtsp://127.0.0.1:%d/stream", cfg->rtsp_port);
@@ -118,7 +118,7 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
 
         default:
             LOG_ERROR(MOD, "Unknown sink type %d, defaulting to autovideosink", cfg->sink);
-            pcat(s_pipe_buf, PIPE_BUF, "! videoconvert ! autovideosink sync=false");
+            pcat(s_pipe_buf, CLIENT_PIPE_BUF, "! videoconvert ! autovideosink sync=false");
             break;
     }
 
