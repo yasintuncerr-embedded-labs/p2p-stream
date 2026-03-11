@@ -50,17 +50,17 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
     /* -- 1. Source -------------------------------------------------- */
     if (cfg->use_test_pattern) {
         pcat(s_pipe_buf, HOST_PIPE_BUF,
-                "videotestsrc pattern ball is-live=true"
+                "videotestsrc pattern=ball is-live=true "
         );
     } else {
         pcat(s_pipe_buf, HOST_PIPE_BUF,
-            "%s device=%s io-mode=4", /* io-mode=: dmabuf-import    */
+            "%s device=%s io-mode=4 ", /* trailing space keeps '!' separate */
             p->src_element, p->camera_device);
     }
 
     /* -- 2. Source caps -------------------------------------------- */
-    pcat(s_pipe_buf, PIPE_BUF,
-        "! video/x-raw, format=%s,width=%d,height=%d,framerate=%d/1",
+    pcat(s_pipe_buf, HOST_PIPE_BUF,
+        "! video/x-raw, format=%s,width=%d,height=%d,framerate=%d/1 ",
         p->src_caps_fmt, cfg->width, cfg->height, cfg->fps);
 
     /* -- 3. Optional Colorspace convert(needed for SW encoders)----- */
