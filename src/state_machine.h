@@ -37,7 +37,8 @@ typedef enum {
     SM_EVT_STREAM_EOS,          /* EOS (file sink done, etc.)   */
     SM_EVT_RECOVER_OK,          /* recovery succeeded           */
     SM_EVT_RECOVER_FAIL,        /* recovery exhausted retries   */
-}SmEvent;
+    SM_EVT_COUNT                /* sentinel — keep last         */
+} SmEvent;
 
 typedef struct StreamSM StreamSM;
 

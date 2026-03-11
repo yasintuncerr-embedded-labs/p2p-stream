@@ -187,7 +187,7 @@ int main(int argc, char *argv[])
         const char *default_peer = (cfg.role == ROLE_HOST)
                                    ? cfg.profile.peer_ip_client
                                    : cfg.profile.peer_ip_host;
-        strncpy(cfg.peer_ip, default_peer, sizeof(cfg.peer_ip) - 1);
+        snprintf(cfg.peer_ip, sizeof(cfg.peer_ip), "%s", default_peer);
     }
 
     /* ── Signal handlers ─────────────────────────────────────────── */

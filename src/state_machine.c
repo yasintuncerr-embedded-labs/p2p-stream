@@ -200,64 +200,61 @@ static void transition(StreamSM *sm, SmState next, void (*action)(StreamSM *))
 
 static void *sm_thread(void *arg)
 {
-
     StreamSM *sm = (StreamSM *)arg;
 
     /* Auto-start if trigger is Auto */
-    if(sm->cfg.trigger == TRIGGER_AUTO)
+    if (sm->cfg.trigger == TRIGGER_AUTO)
         sm_post_event(sm, SM_EVT_START);
 
-        while (sm->running) {
-            pthread_mutex_clock(&sm->q_lock);
-            while (sm->q_count == 0 && sm->running) 
-                pthread_cond_wait(&sm->q_cond, &sm->q_lock);
-            
-            if (!sm->running) { pthread_mutex_unlock(&sm->q_lock); break;}
+    while (sm->running) {
+        pthread_mutex_lock(&sm->q_lock);
+        while (sm->q_count == 0 && sm->running)
+            pthread_cond_wait(&sm->q_cond, &sm->q_lock);
 
-            SmEvent evt = sm->queue[sm->q_head];
-            sm->q_head = (sm->q_head + 1) % EVENT_QUEUE_SIZE;
-            sm->q_count--;
-            pthread_mutex_unlock(&sm->q_lock);
+        if (!sm->running) { pthread_mutex_unlock(&sm->q_lock); break; }
 
-            LOG_DEBUG(MOD, "Event: %s (state=%s)", 
-                    sm_event_name(evt), sm_state_name(sm->state));
+        SmEvent evt = sm->queue[sm->q_head];
+        sm->q_head = (sm->q_head + 1) % EVENT_QUEUE_SIZE;
+        sm->q_count--;
+        pthread_mutex_unlock(&sm->q_lock);
 
-            const Transition *t = &s_trans[sm->state][evt];
-            if (t->next == (SmState)-1) {
-                LOG_WARN(MOD, "Ignored event %s in state %s",
-                    sm_event_name(evt), sm_state_name(sm->state));
-                continue;
-            }
-            transition(sm, t->next, t->action);
+        LOG_DEBUG(MOD, "Event: %s (state=%s)",
+                sm_event_name(evt), sm_state_name(sm->state));
+
+        const Transition *t = &s_trans[sm->state][evt];
+        if (t->next == (SmState)-1) {
+            LOG_WARN(MOD, "Ignored event %s in state %s",
+                sm_event_name(evt), sm_state_name(sm->state));
+            continue;
         }
-        LOG_INFO(MOD, "SM thread exiting");
-        return NULL;
-}   
+        transition(sm, t->next, t->action);
+    }
+    LOG_INFO(MOD, "SM thread exiting");
+    return NULL;
+}
 
 
 /* -----------------------------------------------------------------------
  * Public API
  * --------------------------------------------------------------------- */
- StreamM *sm_create(const StreamConfig *cfg, SmStateChangeCb on_state, void *userdata)
- {
-    Stream *sm = calloc(1, sizeof(*sm));
+StreamSM *sm_create(const StreamConfig *cfg, SmStateChangeCb on_state, void *userdata)
+{
+    StreamSM *sm = calloc(1, sizeof(*sm));
     if (!sm) return NULL;
 
     sm->cfg         = *cfg;
     sm->state       = SM_STATE_IDLE;
     sm->on_state    = on_state;
     sm->userdata    = userdata;
-    sm->runnning    = 1;
-
+    sm->running     = 1;
 
     pthread_mutex_init(&sm->q_lock, NULL);
     pthread_cond_init(&sm->q_cond, NULL);
-    pthread_create(&sm->thread, NULL, sm_thread, cm);
+    pthread_create(&sm->thread, NULL, sm_thread, sm);
 
-    LOG_INFO(MOD, "State machine created (triggerr=%d)", cfg->trigger);
+    LOG_INFO(MOD, "State machine created (trigger=%d)", cfg->trigger);
     return sm;
-
- }
+}
 
 
 void sm_destroy(StreamSM *sm)
