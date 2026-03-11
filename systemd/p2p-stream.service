@@ -1,0 +1,56 @@
+[Unit]
+Description=P2P Wi-Fi Direct Stream (Camera → UDP / UDP → HDMI)
+Documentation=https://github.com/yourorg/p2p-stream
+After=network.target p2p-init.service
+Wants=p2p-init.service
+
+# Wait for Wi-Fi direct link to be established
+ConditionPathExists=/run/p2p-connected
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/video-node
+
+# ExecStart is built from environment variables set by video-node.env
+# or overridden here. Defaults: host, nxp, h265, hdmi, auto trigger.
+ExecStart=/usr/local/bin/p2p-stream \
+    --role     ${NODE_ROLE:-host}     \
+    --device   ${P2P_DEVICE:-nxp}     \
+    --codec    ${P2P_CODEC:-h265}     \
+    --sink     ${P2P_SINK:-hdmi}      \
+    --trigger  ${P2P_TRIGGER:-auto}   \
+    --width    ${P2P_WIDTH:-1920}     \
+    --height   ${P2P_HEIGHT:-1080}    \
+    --fps      ${P2P_FPS:-30}         \
+    --bitrate  ${P2P_BITRATE:-8000000}\
+    --profiles /etc/p2p-stream/device-profiles \
+    --log-file /var/log/p2p-stream.log
+
+# Runtime directory for FIFO and status file
+RuntimeDirectory=p2p-stream
+RuntimeDirectoryMode=0755
+
+# Restart policy — indistrual: always restart, backoff 5s
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=p2p-stream
+
+# Resource limits
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log /run /tmp
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target
