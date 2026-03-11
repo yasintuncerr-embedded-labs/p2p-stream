@@ -36,6 +36,7 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
     return (n < 0) ? -1:0;
 }
 
+
 const char *build_host_pipeline_str(const StreamConfig *cfg) 
 {
     const DeviceProfile *p  = &cfg->profile;

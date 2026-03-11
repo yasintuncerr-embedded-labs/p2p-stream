@@ -208,10 +208,7 @@ int main(int argc, char *argv[])
         LOG_WARN("MAIN", "Control FIFO init failed — running without remote control");
 
     /* ── Main loop: sleep until SM exits ─────────────────────────── */
-    LOG_INFO("MAIN", "Running. Send commands to %s", "/run/p2p-stream.cmd");
-    LOG_INFO("MAIN", "  echo start  > /run/p2p-stream.cmd");
-    LOG_INFO("MAIN", "  echo stop   > /run/p2p-stream.cmd");
-    LOG_INFO("MAIN", "  echo status > /run/p2p-stream.cmd");
+    LOG_INFO("MAIN", "Running. Control path is logged by CTRL module (defaults to /run, fallback /tmp)");
 
     /* Park main thread — everything runs in SM/pipeline/control threads */
     pause();
