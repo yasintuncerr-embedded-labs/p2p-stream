@@ -13,8 +13,8 @@
 #include <errno.h>
 
 #define MOD          "CTRL"
-#define CMD_FIFO     "/run/p2p-stream.cmd"
-#define STATUS_FILE  "/run/p2p-stream.status"
+#define DEFAULT_RUN_DIR "/run"
+#define FALLBACK_RUN_DIR "/tmp"
 #define BUF_SZ       256
 
 
@@ -23,7 +23,23 @@ static struct {
     pthread_t        thread;
     int              running;
     int              fifo_fd;
+    char             cmd_fifo[128];
+    char             status_file[128];
 } g_ctrl;
+
+static void resolve_runtime_paths(void)
+{
+    const char *run_dir = getenv("P2P_STREAM_RUN_DIR");
+    if (!run_dir || !run_dir[0]) run_dir = DEFAULT_RUN_DIR;
+
+    if (access(run_dir, W_OK) != 0) {
+        LOG_WARN(MOD, "Runtime dir '%s' not writable, using %s", run_dir, FALLBACK_RUN_DIR);
+        run_dir = FALLBACK_RUN_DIR;
+    }
+
+    snprintf(g_ctrl.cmd_fifo, sizeof(g_ctrl.cmd_fifo), "%s/p2p-stream.cmd", run_dir);
+    snprintf(g_ctrl.status_file, sizeof(g_ctrl.status_file), "%s/p2p-stream.status", run_dir);
+}
 
 
 /* -----------------------------------------------------------------------
@@ -42,7 +58,7 @@ static struct {
     char tbuf[32];
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm_info);
 
-    FILE *fp = fopen(STATUS_FILE, "w");
+    FILE *fp = fopen(g_ctrl.status_file, "w");
     if (!fp) return;
 
     fprintf(fp,
@@ -97,9 +113,9 @@ static void *ctrl_thread(void *arg)
 
     while (g_ctrl.running) {
         /* Re-open FIFO each iteration (readers block until writer opens) */
-        g_ctrl.fifo_fd = open(CMD_FIFO, O_RDONLY);
+        g_ctrl.fifo_fd = open(g_ctrl.cmd_fifo, O_RDONLY);
         if (g_ctrl.fifo_fd < 0) {
-            LOG_ERROR(MOD, "Cannot open FIFO %s: %s", CMD_FIFO, strerror(errno));
+            LOG_ERROR(MOD, "Cannot open FIFO %s: %s", g_ctrl.cmd_fifo, strerror(errno));
             sleep(1);
             continue;
         }
@@ -132,20 +148,21 @@ int control_init(StreamSM *sm)
     g_ctrl.sm      = sm;
     g_ctrl.running = 1;
     g_ctrl.fifo_fd = -1;
+    resolve_runtime_paths();
 
     /* Create FIFO if not exists */
-    if (mkfifo(CMD_FIFO, 0666) < 0 && errno != EEXIST) {
-        LOG_ERROR(MOD, "mkfifo(%s) failed: %s", CMD_FIFO, strerror(errno));
+    if (mkfifo(g_ctrl.cmd_fifo, 0666) < 0 && errno != EEXIST) {
+        LOG_ERROR(MOD, "mkfifo(%s) failed: %s", g_ctrl.cmd_fifo, strerror(errno));
         return -1;
     }
-    chmod(CMD_FIFO, 0666);
+    chmod(g_ctrl.cmd_fifo, 0666);
 
     /* Initial status */
     write_status();
 
     pthread_create(&g_ctrl.thread, NULL, ctrl_thread, NULL);
-    LOG_INFO(MOD, "Control FIFO ready: %s", CMD_FIFO);
-    LOG_INFO(MOD, "Status file: %s", STATUS_FILE);
+    LOG_INFO(MOD, "Control FIFO ready: %s", g_ctrl.cmd_fifo);
+    LOG_INFO(MOD, "Status file: %s", g_ctrl.status_file);
     return 0;
 }
 
@@ -154,10 +171,10 @@ void control_deinit(void)
     g_ctrl.running = 0;
     if (g_ctrl.fifo_fd >= 0) close(g_ctrl.fifo_fd);
     /* Unblock thread by opening the FIFO briefly */
-    int fd = open(CMD_FIFO, O_WRONLY | O_NONBLOCK);
+    int fd = open(g_ctrl.cmd_fifo, O_WRONLY | O_NONBLOCK);
     if (fd >= 0) close(fd);
     pthread_join(g_ctrl.thread, NULL);
-    unlink(CMD_FIFO);
-    unlink(STATUS_FILE);
+    unlink(g_ctrl.cmd_fifo);
+    unlink(g_ctrl.status_file);
     LOG_INFO(MOD, "Control FIFO closed");
 }
