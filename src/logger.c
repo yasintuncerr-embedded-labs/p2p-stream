@@ -6,6 +6,7 @@
 #include <time.h>
 #include <syslog.h>
 #include <pthread.h>
+#include <errno.h>
 
 #define LOG_FILE_MAX_BYTES  (5 * 1024 * 1024)   /* 5 MB per file  */
 #define LOG_FILE_ROTATE_MAX  3                   /* keep 3 backups */
@@ -66,8 +67,21 @@ void logger_init(const char *ident, const char *log_file, P2pLogLevel min_level)
     if (log_file) {
         strncpy(g_log.path, log_file, sizeof(g_log.path) - 1);
         g_log.fp = fopen(log_file, "a");
-        if (!g_log.fp)
-            syslog(LOG_WARNING, "logger: cannot open %s, file logging disabled", log_file);
+        if (!g_log.fp) {
+            const char *fallback = "/tmp/p2p-stream.log";
+            syslog(LOG_WARNING,
+                   "logger: cannot open %s (%s), trying fallback %s",
+                   log_file, strerror(errno), fallback);
+
+            strncpy(g_log.path, fallback, sizeof(g_log.path) - 1);
+            g_log.path[sizeof(g_log.path) - 1] = '\0';
+            g_log.fp = fopen(fallback, "a");
+            if (!g_log.fp) {
+                syslog(LOG_WARNING,
+                       "logger: cannot open fallback %s (%s), file logging disabled",
+                       fallback, strerror(errno));
+            }
+        }
     }
 }
 
