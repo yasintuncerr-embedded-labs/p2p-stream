@@ -76,38 +76,62 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
     }
 
     /* -- 4. Encoder ----------------------------------------------- */
-    const char *enc_elem = p->enc_element[cod];
+    const char *enc_elem  = p->enc_element[cod];
     const char *enc_extra = p->enc_extra[cod];
 
+    /* V4L2 hardware encoders (v4l2h265enc, v4l2h264enc ...) do not have a
+     * GStreamer "bitrate" property.  Bitrate is a V4L2 control, so it must
+     * be injected into the extra-controls string as "video_bitrate=N".     */
+    int is_v4l2_enc = (strncmp(enc_elem, "v4l2", 4) == 0);
+
+    if (is_v4l2_enc) {
+        /* Build the encoder fragment with video_bitrate inside extra-controls.
+         * Profile enc_extra is expected to look like:
+         *   extra-controls="controls,key=val,..."
+         * We insert video_bitrate right after "controls,".                  */
+        const char *tag = "extra-controls=\"controls,";
+        const char *pos = enc_extra[0] ? strstr(enc_extra, tag) : NULL;
+
+        if (pos) {
+            /* Inject video_bitrate right after "controls," */
+            int prefix_len = (int)(pos - enc_extra) + (int)strlen(tag);
+            pcat(s_pipe_buf, HOST_PIPE_BUF,
+                 " ! %s %.*svideo_bitrate=%d,%s ",
+                 enc_elem, prefix_len, enc_extra,
+                 enc_bitrate, pos + strlen(tag));
+        } else {
+            /* No extra-controls in profile — build one from scratch */
+            pcat(s_pipe_buf, HOST_PIPE_BUF,
+                 " ! %s extra-controls=\"controls,video_bitrate=%d\" %s ",
+                 enc_elem, enc_bitrate,
+                 enc_extra[0] ? enc_extra : "");
+        }
+    } else {
+        /* Software encoders: bitrate is a plain GStreamer property */
+        pcat(s_pipe_buf, HOST_PIPE_BUF,
+             " ! %s bitrate=%d %s ",
+             enc_elem, enc_bitrate,
+             enc_extra[0] ? enc_extra : "");
+    }
+
+    /* RTP packetiser */
     if (cod == CODEC_H265) {
-        pcat(s_pipe_buf, HOST_PIPE_BUF,
-        "! %s bitrate=%d %s",
-        enc_elem, enc_bitrate,
-        enc_extra[0]? enc_extra : ""
-        );
-        /* Parse / slice header insertion for RTP */
-        pcat(s_pipe_buf, HOST_PIPE_BUF,
-             "! h265parse config-interval=-1 ");
+        pcat(s_pipe_buf, HOST_PIPE_BUF, "! h265parse config-interval=-1 ");
         pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! rtph265pay config-interval=1 pt=%d mtu=1316 ",
              p->rtp_pt_h265);
     } else {
-        pcat(s_pipe_buf, HOST_PIPE_BUF,
-             "! %s bitrate=%d %s ",
-             enc_elem, enc_bitrate,
-             enc_extra[0] ? enc_extra : "");
-        pcat(s_pipe_buf, HOST_PIPE_BUF,
-             "! h264parse config-interval=-1 ");
+        pcat(s_pipe_buf, HOST_PIPE_BUF, "! h264parse config-interval=-1 ");
         pcat(s_pipe_buf, HOST_PIPE_BUF,
              "! rtph264pay config-interval=1 pt=%d mtu=1316 ",
              p->rtp_pt_h264);
     }
 
     /* -- 5. UDP Sink -------------------------------------------- */
-    pcat(s_pipe_buf, PIPE_BUF,
+    pcat(s_pipe_buf, HOST_PIPE_BUF,
         "! udpsink host=%s port=%d sync=false async=false",
         cfg->peer_ip, p->stream_port);
-    
+
     LOG_INFO(MOD, "Pipeline: %s", s_pipe_buf);
     return s_pipe_buf;
 }
