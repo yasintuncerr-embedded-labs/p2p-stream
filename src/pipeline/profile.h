@@ -33,6 +33,7 @@ typedef struct {
     char src_element[PROFILE_STR_MAX];      /* v4l2src / videotestsrc   */
     char src_caps_fmt[PROFILE_STR_MAX];     /* NV12 / I420 / BGRx       */
     int need_convert;                       /* 1 = insert videoconvert  */
+    int src_io_mode;                        /* V4L2 I/O mode: 2=mmap (default), 4=dmabuf-export, 5=dmabuf-import */
 
     /* Encoder - indexed by CodecType  */
     char enc_element    [CODEC_COUNT][PROFILE_STR_MAX]; /* v4l2h265enc ...*/

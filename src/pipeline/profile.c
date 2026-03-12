@@ -71,6 +71,10 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     kf_str(kf, "source", "element",       p->src_element,   sizeof(p->src_element),   "v4l2src");
     kf_str(kf, "source", "caps_format",   p->src_caps_fmt,  sizeof(p->src_caps_fmt),  "NV12");
     p->need_convert = kf_bool(kf, "source", "need_convert", 0);
+    /* io_mode: 2=mmap (safe default), 4=dmabuf-export, 5=dmabuf-import.
+     * Do NOT use 4 with v4l2h265enc/v4l2h264enc (Hantro M2M) — the VPU
+     * encoder does not import DMA-BUF from v4l2src, causing not-negotiated. */
+    p->src_io_mode = kf_int(kf, "source", "io_mode", 2);
 
     /* [encoder] */
     kf_str(kf, "encoder", "h265_element", p->enc_element[CODEC_H265], PROFILE_STR_MAX, "x265enc");

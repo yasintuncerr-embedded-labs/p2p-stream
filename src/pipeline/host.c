@@ -60,9 +60,13 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
             pcat(s_pipe_buf, HOST_PIPE_BUF,
                 "%s ", p->src_element);
         } else {
+            /* io-mode: 2=mmap (safe with all V4L2 M2M encoders, incl. Hantro).
+             * Do NOT use 4 (dmabuf-export) with v4l2h265enc/v4l2h264enc —
+             * the Hantro VPU M2M encoder cannot import DMA-BUF buffers from
+             * v4l2src, which causes a not-negotiated (-4) error immediately. */
             pcat(s_pipe_buf, HOST_PIPE_BUF,
-                "%s device=%s io-mode=4 ", /* trailing space keeps '!' separate */
-                p->src_element, p->camera_device);
+                "%s device=%s io-mode=%d ",
+                p->src_element, p->camera_device, p->src_io_mode);
         }
     }
 
