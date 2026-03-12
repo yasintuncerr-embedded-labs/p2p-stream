@@ -71,10 +71,6 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     kf_str(kf, "source", "element",       p->src_element,   sizeof(p->src_element),   "v4l2src");
     kf_str(kf, "source", "caps_format",   p->src_caps_fmt,  sizeof(p->src_caps_fmt),  "NV12");
     p->need_convert = kf_bool(kf, "source", "need_convert", 0);
-    /* io_mode: 2=mmap (safe default), 4=dmabuf-export, 5=dmabuf-import.
-     * Do NOT use 4 with v4l2h265enc/v4l2h264enc (Hantro M2M) — the VPU
-     * encoder does not import DMA-BUF from v4l2src, causing not-negotiated. */
-    p->src_io_mode = kf_int(kf, "source", "io_mode", 2);
 
     /* [encoder] */
     kf_str(kf, "encoder", "h265_element", p->enc_element[CODEC_H265], PROFILE_STR_MAX, "x265enc");
@@ -82,6 +78,9 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     kf_str(kf, "encoder", "h264_element", p->enc_element[CODEC_H264], PROFILE_STR_MAX, "x264enc");
     kf_str(kf, "encoder", "h264_extra",   p->enc_extra  [CODEC_H264], PROFILE_STR_MAX, "");
     p->enc_bitrate_unit_kbps = kf_bool(kf, "encoder", "bitrate_unit_kbps", 0);
+    /* output-io-mode on HW encoder: 0=default (off), 4=dmabuf.
+     * NXP Hantro VPU needs output-io-mode=4 for the encoder output side. */
+    p->enc_output_io_mode = kf_int(kf, "encoder", "output_io_mode", 0);
 
     /* [decoder] */
     kf_str(kf, "decoder", "h265_element", p->dec_element[CODEC_H265], PROFILE_STR_MAX, "avdec_h265");

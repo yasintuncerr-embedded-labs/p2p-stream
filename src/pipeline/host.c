@@ -60,20 +60,19 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
             pcat(s_pipe_buf, HOST_PIPE_BUF,
                 "%s ", p->src_element);
         } else {
-            /* io-mode: 2=mmap (safe with all V4L2 M2M encoders, incl. Hantro).
-             * Do NOT use 4 (dmabuf-export) with v4l2h265enc/v4l2h264enc —
-             * the Hantro VPU M2M encoder cannot import DMA-BUF buffers from
-             * v4l2src, which causes a not-negotiated (-4) error immediately. */
             pcat(s_pipe_buf, HOST_PIPE_BUF,
-                "%s device=%s io-mode=%d ",
-                p->src_element, p->camera_device, p->src_io_mode);
+                "%s device=%s ",
+                p->src_element, p->camera_device);
         }
     }
 
     /* -- 2. Source caps -------------------------------------------- */
+    /* Do NOT lock framerate here — let the driver negotiate it.
+     * Forcing framerate=30/1 when the camera reports 60 causes
+     * not-negotiated (-4) on the first buffer in gst_base_src_loop. */
     pcat(s_pipe_buf, HOST_PIPE_BUF,
-        "! video/x-raw, format=%s,width=%d,height=%d,framerate=%d/1 ",
-        p->src_caps_fmt, cfg->width, cfg->height, cfg->fps);
+        "! video/x-raw,format=%s,width=%d,height=%d ",
+        p->src_caps_fmt, cfg->width, cfg->height);
 
     /* -- 3. Optional Colorspace convert(needed for SW encoders)----- */
     if (p->need_convert || cfg->use_test_pattern) {
@@ -108,14 +107,18 @@ const char *build_host_pipeline_str(const StreamConfig *cfg)
             /* Inject video_bitrate right after "controls," */
             int prefix_len = (int)(pos - enc_extra) + (int)strlen(tag);
             pcat(s_pipe_buf, HOST_PIPE_BUF,
-                 " ! %s %.*svideo_bitrate=%d,%s ",
-                 enc_elem, prefix_len, enc_extra,
+                 " ! %s %s%.*svideo_bitrate=%d,%s ",
+                 enc_elem,
+                 p->enc_output_io_mode ? "output-io-mode=4 " : "",
+                 prefix_len, enc_extra,
                  enc_bitrate, pos + strlen(tag));
         } else {
             /* No extra-controls in profile — build one from scratch */
             pcat(s_pipe_buf, HOST_PIPE_BUF,
-                 " ! %s extra-controls=\"controls,video_bitrate=%d\" %s ",
-                 enc_elem, enc_bitrate,
+                 " ! %s %sextra-controls=\"controls,video_bitrate=%d\" %s ",
+                 enc_elem,
+                 p->enc_output_io_mode ? "output-io-mode=4 " : "",
+                 enc_bitrate,
                  enc_extra[0] ? enc_extra : "");
         }
     } else {

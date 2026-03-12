@@ -29,40 +29,40 @@ typedef struct {
     char iface       [PROFILE_STR_MAX];     /* Wi-Fi iface: mlan0/wlan0 */
 
     /* Camera / Source */
-    char camera_device[PROFILE_STR_MAX];    /* dev/vide0                */
-    char src_element[PROFILE_STR_MAX];      /* v4l2src / videotestsrc   */
-    char src_caps_fmt[PROFILE_STR_MAX];     /* NV12 / I420 / BGRx       */
-    int need_convert;                       /* 1 = insert videoconvert  */
-    int src_io_mode;                        /* V4L2 I/O mode: 2=mmap (default), 4=dmabuf-export, 5=dmabuf-import */
+    char camera_device[PROFILE_STR_MAX];    /* /dev/videoN                      */
+    char src_element[PROFILE_STR_MAX];      /* v4l2src / libcamerasrc           */
+    char src_caps_fmt[PROFILE_STR_MAX];     /* NV12 / I420 / BGRx               */
+    int need_convert;                       /* 1 = insert videoconvert          */
 
     /* Encoder - indexed by CodecType  */
-    char enc_element    [CODEC_COUNT][PROFILE_STR_MAX]; /* v4l2h265enc ...*/
-    char enc_extra      [CODEC_COUNT][PROFILE_STR_MAX]; /* extra params   */
-    int enc_bitrate_unit_kbps;                          /* 1 if elemenr uses kbps */
+    char enc_element    [CODEC_COUNT][PROFILE_STR_MAX]; /* v4l2h265enc ...      */
+    char enc_extra      [CODEC_COUNT][PROFILE_STR_MAX]; /* extra params         */
+    int  enc_output_io_mode;               /* output-io-mode on HW enc (0=off, 4=dmabuf) */
+    int enc_bitrate_unit_kbps;             /* 1 if element uses kbps            */
 
     /* Decoder - indexed by CodecType */
     char dec_element    [CODEC_COUNT][PROFILE_STR_MAX];
     char dec_extra      [CODEC_COUNT][PROFILE_STR_MAX];
 
     /* Sinks */
-    char sink_hdmi      [PROFILE_STR_MAX];  /* waylandsink / kmssink ...*/
-    char sink_deploy    [PROFILE_STR_MAX];  /* autovideosink            */
+    char sink_hdmi      [PROFILE_STR_MAX];  /* waylandsink / kmssink            */
+    char sink_deploy    [PROFILE_STR_MAX];  /* autovideosink                    */
 
     /* RTP payload types */
     int  rtp_pt_h265;    /* default 96 */
     int  rtp_pt_h264;    /* default 97 */
 
     /* Network */
-    char peer_ip_host  [64];   /* 192.168.77.2 (filled at runtime)   */
-    char peer_ip_client[64];   /* 192.168.77.1                       */
-    int  stream_port;          /* default 5600                       */
-    int  rtsp_port;            /* default 8554                       */
+    char peer_ip_host  [64];   /* peer address when role=host   */
+    char peer_ip_client[64];   /* peer address when role=client */
+    int  stream_port;          /* default 5600                  */
+    int  rtsp_port;            /* default 8554                  */
 
 } DeviceProfile;
 
 /* Load profile from INI file.
  * Searches: <profiles_dir>/<device>.ini
- * Returns 0 on success, -1 on error. 
+ * Returns 0 on success, -1 on error.
  */
  int profile_load (DeviceProfile *p, const char *profiles_dir, const char *device);
  void profile_dump (const DeviceProfile *p);    /* Log all fields */
