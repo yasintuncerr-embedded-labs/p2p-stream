@@ -46,7 +46,7 @@ static int pcat(char *buf, size_t bufsz, const char *fmt, ...)
     const char *enc_name = (cod == CODEC_H265) ? "H265" : "H264";
     int        pt        = (cod == CODEC_H265) ? p->rtp_pt_h265 : p->rtp_pt_h264;
   
-    pcat(s_pipe_buf, PIPE_BUF,
+    pcat(s_pipe_buf, CLIENT_PIPE_BUF,
         "udpsrc port=%d buffer-size=2094512 "
         "caps=\"application/x-rtp,media=video,clock-rate=90000,"
         "encoding-name=%s,payload=%d\" ",
