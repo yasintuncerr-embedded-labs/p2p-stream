@@ -35,8 +35,8 @@ set(SOURCES
     src/control.c
     src/pipeline/profile.c
     src/pipeline/pipeline.c
-    src/pipeline/host.c
-    src/pipeline/client.c
+    src/pipeline/sender.c
+    src/pipeline/receiver.c
 )
 
 add_executable(p2p-stream ${SOURCES})
