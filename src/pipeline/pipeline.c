@@ -241,6 +241,11 @@ int pipeline_stop(PipelineCtx *ctx)
 {
     if (!ctx || !ctx->pipeline) return -1;
     gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
+    /* Block until the state change completes (up to 5 s).
+     * This ensures the V4L2 file descriptor is fully released before the
+     * next pipeline attempts to open the same /dev/videoN device.
+     * Without this wait, rapid stop→create cycles cause EBUSY on S_FMT. */
+    gst_element_get_state(ctx->pipeline, NULL, NULL, 5 * GST_SECOND);
     LOG_INFO(MOD, "Pipeline stopped (NULL state)");
     return 0;
 }
@@ -279,7 +284,10 @@ void pipeline_destroy(PipelineCtx *ctx)
 
     if (ctx->pipeline) {
         gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
+        /* Wait for NULL to complete → V4L2 fd released before unref */
+        gst_element_get_state(ctx->pipeline, NULL, NULL, 5 * GST_SECOND);
         gst_object_unref(ctx->pipeline);
+        ctx->pipeline = NULL;
     }
 
     if (ctx->loop) {
