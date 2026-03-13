@@ -44,7 +44,7 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
 /* -----------------------------------------------------------------------
  * profile_load
  * --------------------------------------------------------------------- */
- int profile_load(DeviceProfile *p, const char *profiles_dir, const char *device)
+int profile_load(DeviceProfile *p, const char *profiles_dir, const char *device)
 {
     if (!p || !profiles_dir || !device) return -1;
     memset(p, 0, sizeof(*p));
@@ -63,14 +63,18 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     }
 
     /* [device] */
-    kf_str(kf, "device", "name",  p->device_name,  sizeof(p->device_name),  device);
-    kf_str(kf, "device", "iface", p->iface,         sizeof(p->iface),         "wlan0");
+    kf_str(kf, "device", "name",  p->device_name, sizeof(p->device_name), device);
+    kf_str(kf, "device", "iface", p->iface,        sizeof(p->iface),        "wlan0");
 
     /* [source] */
     kf_str(kf, "source", "camera_device", p->camera_device, sizeof(p->camera_device), "/dev/video0");
     kf_str(kf, "source", "element",       p->src_element,   sizeof(p->src_element),   "v4l2src");
     kf_str(kf, "source", "caps_format",   p->src_caps_fmt,  sizeof(p->src_caps_fmt),  "NV12");
     p->need_convert = kf_bool(kf, "source", "need_convert", 0);
+    /* io_mode: 2=mmap (safe default). 4=dmabuf-export must NOT be used with
+     * v4l2h265enc/v4l2h264enc — the Hantro M2M encoder cannot import DMA-BUF
+     * from v4l2src, causing not-negotiated (-4) on pipeline start. */
+    p->src_io_mode  = kf_int(kf,  "source", "io_mode",      2);
 
     /* [encoder] */
     kf_str(kf, "encoder", "h265_element", p->enc_element[CODEC_H265], PROFILE_STR_MAX, "x265enc");
@@ -78,8 +82,10 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     kf_str(kf, "encoder", "h264_element", p->enc_element[CODEC_H264], PROFILE_STR_MAX, "x264enc");
     kf_str(kf, "encoder", "h264_extra",   p->enc_extra  [CODEC_H264], PROFILE_STR_MAX, "");
     p->enc_bitrate_unit_kbps = kf_bool(kf, "encoder", "bitrate_unit_kbps", 0);
-    /* output-io-mode on HW encoder: 0=default (off), 4=dmabuf.
-     * NXP Hantro VPU needs output-io-mode=4 for the encoder output side. */
+    /* output-io-mode on encoder output pad.
+     * 0 = off (default). 4 = dmabuf-export — reduces Hantro VPU encode
+     * latency by ~1 s by bypassing the internal output queue. Safe on iMX8MP.
+     * Set output_io_mode=4 in [encoder] for NXP profiles. */
     p->enc_output_io_mode = kf_int(kf, "encoder", "output_io_mode", 0);
 
     /* [decoder] */
@@ -89,8 +95,8 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
     kf_str(kf, "decoder", "h264_extra",   p->dec_extra  [CODEC_H264], PROFILE_STR_MAX, "");
 
     /* [sink] */
-    kf_str(kf, "sink", "hdmi",    p->sink_hdmi,    sizeof(p->sink_hdmi),    "kmssink");
-    kf_str(kf, "sink", "display", p->sink_deploy,  sizeof(p->sink_deploy),  "autovideosink");
+    kf_str(kf, "sink", "hdmi",    p->sink_hdmi,   sizeof(p->sink_hdmi),   "kmssink");
+    kf_str(kf, "sink", "display", p->sink_deploy, sizeof(p->sink_deploy), "autovideosink");
 
     /* [network] */
     p->rtp_pt_h265  = kf_int(kf, "network", "rtp_pt_h265",  96);
@@ -100,6 +106,20 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
 
     kf_str(kf, "network", "peer_ip_host",   p->peer_ip_host,   sizeof(p->peer_ip_host),   "192.168.77.1");
     kf_str(kf, "network", "peer_ip_client", p->peer_ip_client, sizeof(p->peer_ip_client), "192.168.77.2");
+
+    /* UDP receive buffer size. Requires net.core.rmem_max >= this value.
+     * Default 2 MB is safe; increase to 8 MB on lossy Wi-Fi links. */
+    p->udp_buffer_size = kf_int(kf, "network", "udp_buffer_size", 2097152);
+
+    /* Override RTP timestamps with local wall-clock on receive side.
+     * Set true when sender/receiver clocks are not synced (e.g. NXP→Mac).
+     * For NXP↔NXP with shared NTP, leave false. */
+    p->rtp_do_timestamp = kf_bool(kf, "network", "rtp_do_timestamp", 0);
+
+    /* rtpjitterbuffer latency in ms. 0 = jitterbuffer disabled.
+     * 50 ms is a good starting point for Wi-Fi Direct.
+     * Increase if mosaic appears on burst packet loss. */
+    p->jitterbuffer_ms = kf_int(kf, "network", "jitterbuffer_ms", 0);
 
     g_key_file_free(kf);
     LOG_INFO(MOD, "Loaded profile '%s' from %s", p->device_name, path);
@@ -113,16 +133,23 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
 void profile_dump(const DeviceProfile *p)
 {
     LOG_DEBUG(MOD, "=== Device Profile ===");
-    LOG_DEBUG(MOD, "  device      : %s", p->device_name);
-    LOG_DEBUG(MOD, "  iface       : %s", p->iface);
-    LOG_DEBUG(MOD, "  camera      : %s (elem=%s fmt=%s conv=%d)",
-              p->camera_device, p->src_element, p->src_caps_fmt, p->need_convert);
-    LOG_DEBUG(MOD, "  enc H265    : %s %s", p->enc_element[CODEC_H265], p->enc_extra[CODEC_H265]);
-    LOG_DEBUG(MOD, "  enc H264    : %s %s", p->enc_element[CODEC_H264], p->enc_extra[CODEC_H264]);
-    LOG_DEBUG(MOD, "  dec H265    : %s %s", p->dec_element[CODEC_H265], p->dec_extra[CODEC_H265]);
-    LOG_DEBUG(MOD, "  dec H264    : %s %s", p->dec_element[CODEC_H264], p->dec_extra[CODEC_H264]);
-    LOG_DEBUG(MOD, "  sink hdmi   : %s", p->sink_hdmi);
-    LOG_DEBUG(MOD, "  sink display: %s", p->sink_deploy);
-    LOG_DEBUG(MOD, "  port stream : %d  rtsp: %d", p->stream_port, p->rtsp_port);
-    LOG_DEBUG(MOD, "  peer host   : %s  client: %s", p->peer_ip_host, p->peer_ip_client);
+    LOG_DEBUG(MOD, "  device         : %s", p->device_name);
+    LOG_DEBUG(MOD, "  iface          : %s", p->iface);
+    LOG_DEBUG(MOD, "  camera         : %s (elem=%s fmt=%s conv=%d io=%d)",
+              p->camera_device, p->src_element, p->src_caps_fmt,
+              p->need_convert, p->src_io_mode);
+    LOG_DEBUG(MOD, "  enc H265       : %s %s (out-io=%d)",
+              p->enc_element[CODEC_H265], p->enc_extra[CODEC_H265], p->enc_output_io_mode);
+    LOG_DEBUG(MOD, "  enc H264       : %s %s (out-io=%d)",
+              p->enc_element[CODEC_H264], p->enc_extra[CODEC_H264], p->enc_output_io_mode);
+    LOG_DEBUG(MOD, "  dec H265       : %s %s", p->dec_element[CODEC_H265], p->dec_extra[CODEC_H265]);
+    LOG_DEBUG(MOD, "  dec H264       : %s %s", p->dec_element[CODEC_H264], p->dec_extra[CODEC_H264]);
+    LOG_DEBUG(MOD, "  sink hdmi      : %s", p->sink_hdmi);
+    LOG_DEBUG(MOD, "  sink display   : %s", p->sink_deploy);
+    LOG_DEBUG(MOD, "  port stream    : %d  rtsp: %d", p->stream_port, p->rtsp_port);
+    LOG_DEBUG(MOD, "  peer host      : %s  client: %s", p->peer_ip_host, p->peer_ip_client);
+    LOG_DEBUG(MOD, "  udp_buf        : %d bytes", p->udp_buffer_size);
+    LOG_DEBUG(MOD, "  do-timestamp   : %s", p->rtp_do_timestamp ? "true" : "false");
+    LOG_DEBUG(MOD, "  jitterbuffer   : %d ms%s", p->jitterbuffer_ms,
+              p->jitterbuffer_ms == 0 ? " (disabled)" : "");
 }
