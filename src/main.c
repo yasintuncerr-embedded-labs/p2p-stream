@@ -14,10 +14,10 @@
 
 #define DEFAULT_PROFILES_DIR  "/etc/p2p-stream/device-profiles"
 #define DEFAULT_LOG_FILE      "/var/log/p2p-stream.log"
-#define DEFAULT_WIDTH         1920
-#define DEFAULT_HEIGHT        1080
-#define DEFAULT_FPS           30
-#define DEFAULT_BITRATE_BPS   (8 * 1000 * 1000)  /* 8 Mbps */
+#define DEFAULT_WIDTH         1280
+#define DEFAULT_HEIGHT        720
+#define DEFAULT_FPS           120
+#define DEFAULT_BITRATE_BPS   (6 * 1000 * 1000)  /* 6 Mbps */
 
 
 /* -----------------------------------------------------------------------
@@ -27,6 +27,7 @@ static StreamSM *g_sm = NULL;
 
 static void sig_handler(int sig)
 {
+    (void)sig;
     static const char msg[] = "\np2p-stream: caught signal, stopping...\n";
     write(STDERR_FILENO, msg, sizeof(msg) - 1);
     if (g_sm) sm_post_event(g_sm, SM_EVT_STOP);
@@ -40,31 +41,42 @@ static void usage(const char *prog)
 {
     fprintf(stderr,
         "Usage: %s [OPTIONS]\n\n"
-        "  -r, --role       <host|client>        (required)\n"
-        "  -d, --device     <nxp|jetson|rpi4|pc> (required)\n"
-        "  -c, --codec      <h265|h264>           (default: h265)\n"
-        "  -s, --sink       <hdmi|display|file|rtsp> (default: hdmi)\n"
-        "  -t, --trigger    <auto|manual|gpio>    (default: auto)\n"
-        "  -W, --width      <pixels>              (default: 1920)\n"
-        "  -H, --height     <pixels>              (default: 1080)\n"
-        "  -f, --fps        <fps>                 (default: 30)\n"
-        "  -b, --bitrate    <bps>                 (default: 8000000)\n"
-        "  -o, --output     <file path>           (for --sink file)\n"
-        "  -p, --peer-ip    <ip>                  (override peer IP)\n"
-        "  -P, --profiles   <dir>                 (default: %s)\n"
-        "  -l, --log-file   <path>                (default: %s)\n"
-        "  -T, --test-pattern                     (use videotestsrc)\n"
-        "  -v, --verbose                          (debug logging)\n"
+        "Network role (who owns the Wi-Fi link):\n"
+        "  -n, --net-role    <ap|sta>               (required)\n"
+        "        ap  = this device creates the Wi-Fi link (display side)\n"
+        "        sta = this device joins the Wi-Fi link (camera side)\n\n"
+        "Stream role (who sends the video):\n"
+        "  -r, --role        <sender|receiver>       (required)\n"
+        "        sender   = capture, encode, send UDP\n"
+        "        receiver = receive UDP, decode, display\n\n"
+        "  Typical pairing:\n"
+        "        Camera device  : --net-role sta --role sender\n"
+        "        Display device : --net-role ap  --role receiver\n\n"
+        "Other options:\n"
+        "  -d, --device      <nxp|jetson|rpi4|pc>   (required)\n"
+        "  -c, --codec       <h265|h264>              (default: h264)\n"
+        "  -s, --sink        <hdmi|display|file|rtsp> (default: hdmi)\n"
+        "  -t, --trigger     <auto|manual|gpio>       (default: auto)\n"
+        "  -W, --width       <pixels>                 (default: %d)\n"
+        "  -H, --height      <pixels>                 (default: %d)\n"
+        "  -f, --fps         <fps>                    (default: %d)\n"
+        "  -b, --bitrate     <bps>                    (default: %d)\n"
+        "  -o, --output      <file path>              (for --sink file)\n"
+        "  -p, --peer-ip     <ip>                     (override peer IP)\n"
+        "  -P, --profiles    <dir>                    (default: %s)\n"
+        "  -l, --log-file    <path>                   (default: %s)\n"
+        "  -T, --test-pattern                         (use videotestsrc)\n"
+        "  -v, --verbose                              (debug logging)\n"
         "  -h, --help\n\n"
         "Examples:\n"
-        "  %s --role host   --device nxp\n"
-        "  %s --role client --device nxp --sink hdmi\n"
-        "  %s --role host   --device pc  --test-pattern --codec h264\n"
-        "  %s --role client --device pc  --sink display\n\n",
-        prog, DEFAULT_PROFILES_DIR, DEFAULT_LOG_FILE,
-        prog, prog, prog, prog);
+        "  Camera  : %s --net-role sta --role sender   --device nxp\n"
+        "  Display : %s --net-role ap  --role receiver --device nxp --sink hdmi\n"
+        "  PC test : %s --net-role sta --role sender   --device pc  --test-pattern\n\n",
+        prog,
+        DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_FPS, DEFAULT_BITRATE_BPS,
+        DEFAULT_PROFILES_DIR, DEFAULT_LOG_FILE,
+        prog, prog, prog);
 }
-
 
 
 /* -----------------------------------------------------------------------
@@ -77,8 +89,9 @@ int main(int argc, char *argv[])
     /* Defaults */
     StreamConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.role        = ROLE_HOST;
-    cfg.codec       = CODEC_H265;
+    cfg.net_role    = NET_ROLE_AP;
+    cfg.role        = ROLE_RECEIVER;
+    cfg.codec       = CODEC_H264;
     cfg.sink        = SINK_HDMI;
     cfg.trigger     = TRIGGER_AUTO;
     cfg.width       = DEFAULT_WIDTH;
@@ -91,8 +104,11 @@ int main(int argc, char *argv[])
     char profiles_dir[256] = DEFAULT_PROFILES_DIR;
     char log_file[256]     = DEFAULT_LOG_FILE;
     int  verbose           = 0;
+    int  net_role_set      = 0;
+    int  stream_role_set   = 0;
 
     static struct option long_opts[] = {
+        {"net-role",      required_argument, 0, 'n'},
         {"role",          required_argument, 0, 'r'},
         {"device",        required_argument, 0, 'd'},
         {"codec",         required_argument, 0, 'c'},
@@ -113,13 +129,20 @@ int main(int argc, char *argv[])
     };
 
     int opt, idx = 0;
-    while ((opt = getopt_long(argc, argv, "r:d:c:s:t:W:H:f:b:o:p:P:l:Tvh",
+    while ((opt = getopt_long(argc, argv, "n:r:d:c:s:t:W:H:f:b:o:p:P:l:Tvh",
                                long_opts, &idx)) != -1) {
         switch (opt) {
+        case 'n':
+            if      (strcmp(optarg, "ap")  == 0) cfg.net_role = NET_ROLE_AP;
+            else if (strcmp(optarg, "sta") == 0) cfg.net_role = NET_ROLE_STA;
+            else { fprintf(stderr, "Unknown net-role: %s (use ap|sta)\n", optarg); return 1; }
+            net_role_set = 1;
+            break;
         case 'r':
-            if      (strcmp(optarg, "host")   == 0) cfg.role = ROLE_HOST;
-            else if (strcmp(optarg, "client") == 0) cfg.role = ROLE_CLIENT;
-            else { fprintf(stderr, "Unknown role: %s\n", optarg); return 1; }
+            if      (strcmp(optarg, "sender")   == 0) cfg.role = ROLE_SENDER;
+            else if (strcmp(optarg, "receiver") == 0) cfg.role = ROLE_RECEIVER;
+            else { fprintf(stderr, "Unknown role: %s (use sender|receiver)\n", optarg); return 1; }
+            stream_role_set = 1;
             break;
         case 'd': strncpy(device, optarg, sizeof(device) - 1);  break;
         case 'c':
@@ -155,21 +178,29 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* Validate required args */
     if (!device[0]) {
         fprintf(stderr, "Error: --device is required\n\n");
-        usage(argv[0]);
-        return 1;
+        usage(argv[0]); return 1;
+    }
+    if (!net_role_set) {
+        fprintf(stderr, "Error: --net-role is required (ap|sta)\n\n");
+        usage(argv[0]); return 1;
+    }
+    if (!stream_role_set) {
+        fprintf(stderr, "Error: --role is required (sender|receiver)\n\n");
+        usage(argv[0]); return 1;
     }
 
     /* ── Init logger ─────────────────────────────────────────────── */
     logger_init("p2p-stream", log_file,
                 verbose ? P2P_LOG_DEBUG : P2P_LOG_INFO);
 
-    LOG_INFO("MAIN", "p2p-stream starting — role=%s device=%s codec=%s sink=%d",
-             cfg.role == ROLE_HOST ? "host" : "client",
+    LOG_INFO("MAIN", "p2p-stream starting — net=%s stream=%s device=%s codec=%s",
+             cfg.net_role == NET_ROLE_AP  ? "ap"  : "sta",
+             cfg.role     == ROLE_SENDER  ? "sender" : "receiver",
              device,
-             cfg.codec == CODEC_H265 ? "h265" : "h264",
-             cfg.sink);
+             cfg.codec    == CODEC_H265   ? "h265" : "h264");
 
     /* ── Load device profile ─────────────────────────────────────── */
     if (profile_load(&cfg.profile, profiles_dir, device) != 0) {
@@ -179,15 +210,17 @@ int main(int argc, char *argv[])
     }
     profile_dump(&cfg.profile);
 
-    /* Override peer IP if provided */
+    /* ── Resolve peer IP ─────────────────────────────────────────── */
     if (cfg.peer_ip[0]) {
         LOG_INFO("MAIN", "Peer IP override: %s", cfg.peer_ip);
     } else {
-        /* Use default from profile */
-        const char *default_peer = (cfg.role == ROLE_HOST)
-                                   ? cfg.profile.peer_ip_client
-                                   : cfg.profile.peer_ip_host;
+        /* Sender → peer is the receiver (AP side).
+         * Receiver → peer is the sender (STA side). */
+        const char *default_peer = (cfg.role == ROLE_SENDER)
+                                   ? cfg.profile.peer_ip_host
+                                   : cfg.profile.peer_ip_client;
         snprintf(cfg.peer_ip, sizeof(cfg.peer_ip), "%s", default_peer);
+        LOG_INFO("MAIN", "Peer IP from profile: %s", cfg.peer_ip);
     }
 
     /* ── Signal handlers ─────────────────────────────────────────── */
@@ -207,8 +240,7 @@ int main(int argc, char *argv[])
     if (control_init(g_sm) != 0)
         LOG_WARN("MAIN", "Control FIFO init failed — running without remote control");
 
-    /* ── Main loop: sleep until SM exits ─────────────────────────── */
-    LOG_INFO("MAIN", "Running. Control path is logged by CTRL module (defaults to /run, fallback /tmp)");
+    LOG_INFO("MAIN", "Running. Send commands via /run/p2p-stream.cmd");
 
     /* Park main thread — everything runs in SM/pipeline/control threads */
     pause();
