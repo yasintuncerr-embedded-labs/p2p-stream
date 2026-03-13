@@ -60,7 +60,7 @@ typedef struct {
     StreamRole role;
     CodecType codec;
     SinkType sink;
-    TrigggerMode trigger;
+    TriggerMode trigger;
 
     /* Video */
     int width;
