@@ -113,7 +113,6 @@ const char *build_sender_pipeline_str(const StreamConfig *cfg)
             snprintf(out_io, sizeof(out_io), "output-io-mode=%d ", p->enc_output_io_mode);
 
         if (pos) {
-            int prefix_len = (int)(pos - enc_extra) + (int)strlen(tag);
             pcat(s_pipe_buf, SENDER_PIPE_BUF,
                  "! %s %svideo_bitrate=%d,%s ",
                  enc_elem, out_io,
