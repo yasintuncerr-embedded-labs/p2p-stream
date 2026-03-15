@@ -6,7 +6,7 @@
  * Drives GStreamer element selection per platform.
  * --------------------------------------------------------------------- */
 
-#define PROFILE_STR_MAX 128
+#define PROFILE_STR_MAX 256
 
 typedef enum {
     CODEC_H265 = 0,
