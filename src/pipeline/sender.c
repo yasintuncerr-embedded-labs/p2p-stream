@@ -97,53 +97,41 @@ const char *build_sender_pipeline_str(const StreamConfig *cfg)
      * "bitrate" property — bitrate is a V4L2 control injected via
      * extra-controls as "video_bitrate=N".
      *
-     * output-io-mode=4 (dmabuf-export on encoder OUTPUT pad):
-     *   When set, the encoder pushes encoded buffers via DMA-BUF, bypassing
-     *   its internal output queue. This eliminates ~1 s of buffering latency
-     *   on the Hantro VPU. Only applied when enc_output_io_mode != 0. */
+     * We initialize them here without injecting the bitrate manually into
+     * the pipeline string. The bitrate will be properly written via 
+     * g_object_set / GstStructure inside pipeline_create(). */
     int is_v4l2_enc = (strncmp(enc_elem, "v4l2", 4) == 0);
 
+    /* Build output-io-mode fragment (empty string if not set) */
+    char out_io[32] = "";
+    if (is_v4l2_enc && p->enc_output_io_mode != 0)
+        snprintf(out_io, sizeof(out_io), "output-io-mode=%d ", p->enc_output_io_mode);
+
     if (is_v4l2_enc) {
-        const char *tag = "extra-controls=\"controls,";
-        const char *pos = enc_extra[0] ? strstr(enc_extra, tag) : NULL;
-
-        /* Build output-io-mode fragment (empty string if not set) */
-        char out_io[32] = "";
-        if (p->enc_output_io_mode != 0)
-            snprintf(out_io, sizeof(out_io), "output-io-mode=%d ", p->enc_output_io_mode);
-
-        if (pos) {
-            /* Reconstruct: extra-controls="controls,video_bitrate=N,<rest> */
-            pcat(s_pipe_buf, SENDER_PIPE_BUF,
-                 "! %s %sextra-controls=\"controls,video_bitrate=%d,%s ",
-                 enc_elem, out_io,
-                 enc_bitrate, pos + strlen(tag));
-        } else {
-            pcat(s_pipe_buf, SENDER_PIPE_BUF,
-                 "! %s %sextra-controls=\"controls,video_bitrate=%d\" %s ",
-                 enc_elem, out_io,
-                 enc_bitrate,
-                 enc_extra[0] ? enc_extra : "");
-        }
+        /* Do not specify video_bitrate here. Pass down enc_extra unaltered. */
+        pcat(s_pipe_buf, SENDER_PIPE_BUF,
+             "! %s name=encoder %s %s ",
+             enc_elem, out_io,
+             enc_extra[0] ? enc_extra : "");
     } else {
         /* SW encoders: bitrate is a plain GStreamer property */
         pcat(s_pipe_buf, SENDER_PIPE_BUF,
-             "! %s bitrate=%d %s ",
+             "! %s name=encoder bitrate=%d %s ",
              enc_elem, enc_bitrate,
              enc_extra[0] ? enc_extra : "");
     }
 
     /* -- 5. Parse + RTP packetiser ---------------------------------- */
     if (cod == CODEC_H265) {
-        pcat(s_pipe_buf, SENDER_PIPE_BUF, "! h265parse config-interval=-1 ");
+        pcat(s_pipe_buf, SENDER_PIPE_BUF, "! h265parse config-interval=%d ", p->pipe_h265_config_interval);
         pcat(s_pipe_buf, SENDER_PIPE_BUF,
-             "! rtph265pay config-interval=1 pt=%d mtu=1316 ",
-             p->rtp_pt_h265);
+             "! rtph265pay config-interval=%d pt=%d mtu=%d ",
+             p->pipe_pay_config_interval, p->rtp_pt_h265, p->net_mtu);
     } else {
-        pcat(s_pipe_buf, SENDER_PIPE_BUF, "! h264parse config-interval=-1 ");
+        pcat(s_pipe_buf, SENDER_PIPE_BUF, "! h264parse config-interval=%d ", p->pipe_h264_config_interval);
         pcat(s_pipe_buf, SENDER_PIPE_BUF,
-             "! rtph264pay config-interval=1 pt=%d mtu=1316 ",
-             p->rtp_pt_h264);
+             "! rtph264pay config-interval=%d pt=%d mtu=%d ",
+             p->pipe_pay_config_interval, p->rtp_pt_h264, p->net_mtu);
     }
 
     /* -- 6. UDP sink ------------------------------------------------ */
