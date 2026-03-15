@@ -178,8 +178,15 @@ static void add_stats_probe(PipelineCtx *ctx)
         if (pad) {
             gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, stats_probe_cb, ctx, NULL);
             gst_object_unref(pad);
+            LOG_DEBUG(MOD, "Added stats probe to %s pad of %s", 
+                      gst_pad_get_name(pad), gst_element_get_name(target_elem));
+        } else {
+            LOG_WARN(MOD, "Found target element %s, but failed to retrieve pad", 
+                     gst_element_get_name(target_elem));
         }
         gst_object_unref(target_elem);
+    } else {
+        LOG_WARN(MOD, "add_stats_probe failed: could not locate udpsink or udpsrc element in pipeline");
     }
 }
 
@@ -244,10 +251,6 @@ PipelineCtx *pipeline_create(const StreamConfig *cfg,
         return NULL;
     }
 
-    if (cfg->role == ROLE_SENDER) {
-        pipeline_set_bitrate(ctx, cfg->bitrate_bps);
-    }
-
     ctx->loop       = g_main_loop_new(NULL, FALSE);
     ctx->bus        = gst_element_get_bus(ctx->pipeline);
     ctx->bus_watch_id = gst_bus_add_watch(ctx->bus, on_bus_message, ctx);
@@ -270,6 +273,14 @@ PipelineCtx *pipeline_create(const StreamConfig *cfg,
 int pipeline_start(PipelineCtx *ctx)
 {
     if (!ctx || !ctx->pipeline) return -1;
+    
+    /* Safely apply bitrate while the pipeline is in READY state,
+     * as V4L2 encoders often fail to accept controls in NULL state. */
+    gst_element_set_state(ctx->pipeline, GST_STATE_READY);
+    if (ctx->cfg.role == ROLE_SENDER) {
+        pipeline_set_bitrate(ctx, ctx->cfg.bitrate_bps);
+    }
+
     GstStateChangeReturn ret = gst_element_set_state(ctx->pipeline, GST_STATE_PLAYING);
     if (ret == GST_STATE_CHANGE_FAILURE) {
         LOG_ERROR(MOD, "Failed to set pipeline to PLAYING");
