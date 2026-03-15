@@ -28,5 +28,6 @@ void      sm_destroy(StreamSM *sm);
 int       sm_post_event(StreamSM *sm, SmEvent evt);
 SmState   sm_get_state(StreamSM *sm);
 const char *sm_state_name(SmState s);
+const char *sm_event_name(SmEvent e);
 
 #endif /* P2P_STATE_MACHINE_H */
