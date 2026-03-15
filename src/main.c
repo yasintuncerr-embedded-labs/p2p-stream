@@ -5,12 +5,16 @@
 #include <signal.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <pthread.h>
 
 #include "logger.h"
 #include "state_machine.h"
 #include "control.h"
 #include "pipeline/profile.h"
 #include "pipeline/pipeline.h"
+
+#include "event_bus.h"
+#include "net_monitor.h"
 
 #define DEFAULT_PROFILES_DIR  "/etc/p2p-stream/device-profiles"
 #define DEFAULT_LOG_FILE      "/var/log/p2p-stream.log"
@@ -21,16 +25,99 @@
 
 
 /* -----------------------------------------------------------------------
- * Global SM for signal handler
+ * Global State
  * --------------------------------------------------------------------- */
 static StreamSM *g_sm = NULL;
+static int g_main_running = 1;
+static int g_net_is_up = 0;
+static int g_retry_count = 0;
+static int g_in_recovery = 0;
+static pthread_t g_recovery_thread;
 
 static void sig_handler(int sig)
 {
     (void)sig;
     static const char msg[] = "\np2p-stream: caught signal, stopping...\n";
     write(STDERR_FILENO, msg, sizeof(msg) - 1);
-    if (g_sm) sm_post_event(g_sm, SM_EVT_STOP);
+    event_bus_publish(SYS_EVT_QUIT);
+}
+
+static void *recovery_thread(void *arg) {
+    StreamConfig *cfg = (StreamConfig *)arg;
+    int backoff = cfg->profile.sm_backoff_base_s * (1 << g_retry_count);
+    
+    if (g_retry_count >= cfg->profile.sm_max_retries) {
+        LOG_FATAL("MAIN", "Max retries reached. Giving up.");
+        g_in_recovery = 0;
+        return NULL;
+    }
+    
+    LOG_INFO("MAIN", "Retrying stream in %d seconds... (attempt %d/%d)", 
+             backoff, g_retry_count+1, cfg->profile.sm_max_retries);
+    
+    sleep(backoff);
+    g_retry_count++;
+    
+    if (g_main_running && g_net_is_up) {
+        LOG_INFO("MAIN", "Recovery backoff complete. Restarting stream.");
+        sm_post_event(g_sm, SM_EVT_START);
+    }
+    g_in_recovery = 0;
+    return NULL;
+}
+
+
+static void on_sys_event(SysEvent evt, void *userdata)
+{
+    StreamConfig *cfg = (StreamConfig *)userdata;
+
+    switch (evt) {
+        case SYS_EVT_NET_UP:
+            g_net_is_up = 1;
+            g_retry_count = 0;
+            if (cfg->trigger == TRIGGER_AUTO) {
+                LOG_INFO("MAIN", "Network UP -> starting stream");
+                sm_post_event(g_sm, SM_EVT_START);
+            }
+            break;
+
+        case SYS_EVT_NET_DOWN:
+            g_net_is_up = 0;
+            LOG_INFO("MAIN", "Network DOWN -> stopping stream");
+            sm_post_event(g_sm, SM_EVT_STOP);
+            break;
+
+        case SYS_EVT_CMD_START:
+            LOG_INFO("MAIN", "Manual START command received");
+            sm_post_event(g_sm, SM_EVT_START);
+            break;
+
+        case SYS_EVT_CMD_STOP:
+            LOG_INFO("MAIN", "Manual STOP command received");
+            sm_post_event(g_sm, SM_EVT_STOP);
+            break;
+            
+        case SYS_EVT_STREAM_STARTED:
+            g_retry_count = 0;
+            break;
+
+        case SYS_EVT_STREAM_ERROR:
+            LOG_ERROR("MAIN", "Stream error received -> initiating recovery if auto");
+            sm_post_event(g_sm, SM_EVT_STOP);
+            if (cfg->trigger == TRIGGER_AUTO && g_net_is_up && !g_in_recovery) {
+                g_in_recovery = 1;
+                pthread_create(&g_recovery_thread, NULL, recovery_thread, cfg);
+                pthread_detach(g_recovery_thread);
+            }
+            break;
+
+        case SYS_EVT_QUIT:
+            g_main_running = 0;
+            break;
+            
+        default:
+            break;
+    }
 }
 
 
@@ -67,15 +154,10 @@ static void usage(const char *prog)
         "  -l, --log-file    <path>                   (default: %s)\n"
         "  -T, --test-pattern                         (use videotestsrc)\n"
         "  -v, --verbose                              (debug logging)\n"
-        "  -h, --help\n\n"
-        "Examples:\n"
-        "  Camera  : %s --net-role sta --role sender   --device nxp\n"
-        "  Display : %s --net-role ap  --role receiver --device nxp --sink hdmi\n"
-        "  PC test : %s --net-role sta --role sender   --device pc  --test-pattern\n\n",
+        "  -h, --help\n\n",
         prog,
         DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_FPS, DEFAULT_BITRATE_BPS,
-        DEFAULT_PROFILES_DIR, DEFAULT_LOG_FILE,
-        prog, prog, prog);
+        DEFAULT_PROFILES_DIR, DEFAULT_LOG_FILE);
 }
 
 
@@ -178,7 +260,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Validate required args */
     if (!device[0]) {
         fprintf(stderr, "Error: --device is required\n\n");
         usage(argv[0]); return 1;
@@ -202,7 +283,6 @@ int main(int argc, char *argv[])
              device,
              cfg.codec    == CODEC_H265   ? "h265" : "h264");
 
-    /* ── Load device profile ─────────────────────────────────────── */
     if (profile_load(&cfg.profile, profiles_dir, device) != 0) {
         LOG_FATAL("MAIN", "Failed to load profile '%s' from '%s'", device, profiles_dir);
         logger_deinit();
@@ -210,12 +290,9 @@ int main(int argc, char *argv[])
     }
     profile_dump(&cfg.profile);
 
-    /* ── Resolve peer IP ─────────────────────────────────────────── */
     if (cfg.peer_ip[0]) {
         LOG_INFO("MAIN", "Peer IP override: %s", cfg.peer_ip);
     } else {
-        /* Sender → peer is the receiver (AP side).
-         * Receiver → peer is the sender (STA side). */
         const char *default_peer = (cfg.role == ROLE_SENDER)
                                    ? cfg.profile.peer_ip_host
                                    : cfg.profile.peer_ip_client;
@@ -223,32 +300,41 @@ int main(int argc, char *argv[])
         LOG_INFO("MAIN", "Peer IP from profile: %s", cfg.peer_ip);
     }
 
-    /* ── Signal handlers ─────────────────────────────────────────── */
+    /* ── Architecture Init ───────────────────────────────────────── */
     signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
     signal(SIGPIPE, SIG_IGN);
 
-    /* ── Create state machine ────────────────────────────────────── */
+    event_bus_init();
+    event_bus_subscribe(on_sys_event, &cfg);
+
     g_sm = sm_create(&cfg, NULL, NULL);
     if (!g_sm) {
         LOG_FATAL("MAIN", "Failed to create state machine");
+        event_bus_deinit();
         logger_deinit();
         return 1;
     }
 
-    /* ── Start control FIFO ──────────────────────────────────────── */
-    if (control_init(g_sm) != 0)
+    if (control_init() != 0)
         LOG_WARN("MAIN", "Control FIFO init failed — running without remote control");
 
-    LOG_INFO("MAIN", "Running. Send commands via /run/p2p-stream.cmd");
+    if (net_monitor_init(&cfg) != 0)
+        LOG_WARN("MAIN", "Network monitor init failed");
 
-    /* Park main thread — everything runs in SM/pipeline/control threads */
-    pause();
+    LOG_INFO("MAIN", "MainController Running.");
+
+    /* Wait for shutdown */
+    while (g_main_running) {
+        pause(); 
+    }
 
     /* ── Cleanup ──────────────────────────────────────────────────── */
     LOG_INFO("MAIN", "Shutting down...");
+    net_monitor_deinit();
     control_deinit();
     sm_destroy(g_sm);
+    event_bus_deinit();
     gst_deinit();
     logger_deinit();
     return 0;
