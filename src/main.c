@@ -28,6 +28,9 @@
  * Global State
  * --------------------------------------------------------------------- */
 static StreamSM *g_sm = NULL;
+
+static pthread_mutex_t g_main_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_recovery_cond = PTHREAD_COND_INITIALIZER;
 static int g_main_running = 1;
 static int g_net_is_up = 0;
 static int g_retry_count = 0;
@@ -44,25 +47,41 @@ static void sig_handler(int sig)
 
 static void *recovery_thread(void *arg) {
     StreamConfig *cfg = (StreamConfig *)arg;
+    
+    pthread_mutex_lock(&g_main_lock);
     int backoff = cfg->profile.sm_backoff_base_s * (1 << g_retry_count);
     
     if (g_retry_count >= cfg->profile.sm_max_retries) {
         LOG_FATAL("MAIN", "Max retries reached. Giving up.");
         g_in_recovery = 0;
+        pthread_mutex_unlock(&g_main_lock);
         return NULL;
     }
     
     LOG_INFO("MAIN", "Retrying stream in %d seconds... (attempt %d/%d)", 
              backoff, g_retry_count+1, cfg->profile.sm_max_retries);
     
-    sleep(backoff);
+    /* Wait for backoff duration but wake up immediately if signaled to quit */
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += backoff;
+    
+    pthread_cond_timedwait(&g_recovery_cond, &g_main_lock, &ts);
+    
+    if (!g_main_running) {
+        g_in_recovery = 0;
+        pthread_mutex_unlock(&g_main_lock);
+        return NULL;
+    }
+    
     g_retry_count++;
     
-    if (g_main_running && g_net_is_up) {
+    if (g_net_is_up) {
         LOG_INFO("MAIN", "Recovery backoff complete. Restarting stream.");
         sm_post_event(g_sm, SM_EVT_START);
     }
     g_in_recovery = 0;
+    pthread_mutex_unlock(&g_main_lock);
     return NULL;
 }
 
@@ -70,6 +89,8 @@ static void *recovery_thread(void *arg) {
 static void on_sys_event(SysEvent evt, void *userdata)
 {
     StreamConfig *cfg = (StreamConfig *)userdata;
+
+    pthread_mutex_lock(&g_main_lock);
 
     switch (evt) {
         case SYS_EVT_NET_UP:
@@ -85,6 +106,8 @@ static void on_sys_event(SysEvent evt, void *userdata)
             g_net_is_up = 0;
             LOG_INFO("MAIN", "Network DOWN -> stopping stream");
             sm_post_event(g_sm, SM_EVT_STOP);
+            /* interrupt recovery sleep if ongoing */
+            pthread_cond_signal(&g_recovery_cond);
             break;
 
         case SYS_EVT_CMD_START:
@@ -95,6 +118,8 @@ static void on_sys_event(SysEvent evt, void *userdata)
         case SYS_EVT_CMD_STOP:
             LOG_INFO("MAIN", "Manual STOP command received");
             sm_post_event(g_sm, SM_EVT_STOP);
+            /* user-requested stop should break any recovery */
+            pthread_cond_signal(&g_recovery_cond);
             break;
             
         case SYS_EVT_STREAM_STARTED:
@@ -106,6 +131,7 @@ static void on_sys_event(SysEvent evt, void *userdata)
             sm_post_event(g_sm, SM_EVT_STOP);
             if (cfg->trigger == TRIGGER_AUTO && g_net_is_up && !g_in_recovery) {
                 g_in_recovery = 1;
+                /* we must safely join previous thread before creating a new one */
                 pthread_create(&g_recovery_thread, NULL, recovery_thread, cfg);
                 pthread_detach(g_recovery_thread);
             }
@@ -113,11 +139,14 @@ static void on_sys_event(SysEvent evt, void *userdata)
 
         case SYS_EVT_QUIT:
             g_main_running = 0;
+            pthread_cond_signal(&g_recovery_cond);
             break;
             
         default:
             break;
     }
+    
+    pthread_mutex_unlock(&g_main_lock);
 }
 
 
