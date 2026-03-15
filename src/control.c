@@ -22,6 +22,8 @@ static struct {
     volatile int     running;
     int              fifo_fd;
     char             cmd_fifo[128];
+    char             status_file[128];
+    int              current_state; /* Tracks SmState approximation */
 } g_ctrl;
 
 static void resolve_runtime_paths(void)
@@ -35,6 +37,49 @@ static void resolve_runtime_paths(void)
     }
 
     snprintf(g_ctrl.cmd_fifo, sizeof(g_ctrl.cmd_fifo), "%s/p2p-stream.cmd", run_dir);
+    snprintf(g_ctrl.status_file, sizeof(g_ctrl.status_file), "%s/p2p-stream.status", run_dir);
+}
+
+/* -----------------------------------------------------------------------
+ * Status JSON writer
+ * --------------------------------------------------------------------- */
+
+static void write_status(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm_info;
+    gmtime_r(&ts.tv_sec, &tm_info);
+    char tbuf[32];
+    strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm_info);
+
+    FILE *fp = fopen(g_ctrl.status_file, "w");
+    if (!fp) return;
+
+    /* state 0 = IDLE, state 1 = STREAMING, state 2 = ERROR */
+    const char *state_str = (g_ctrl.current_state == 1) ? "STREAMING" :
+                            (g_ctrl.current_state == 2) ? "ERROR" : "IDLE";
+
+    fprintf(fp,
+            "{\n"
+            "  \"timestamp\": \"%s\",\n"
+            "  \"stream_state\": \"%s\",\n"
+            "  \"stream_state_id\": %d\n"
+            "}\n",
+            tbuf, state_str, g_ctrl.current_state);
+
+    fclose(fp);
+}
+
+static void on_sys_event(SysEvent evt, void *userdata)
+{
+    (void)userdata;
+    int prev = g_ctrl.current_state;
+    if (evt == SYS_EVT_STREAM_STARTED) g_ctrl.current_state = 1;
+    else if (evt == SYS_EVT_STREAM_STOPPED) g_ctrl.current_state = 0;
+    else if (evt == SYS_EVT_STREAM_ERROR) g_ctrl.current_state = 2;
+    
+    if (prev != g_ctrl.current_state) write_status();
 }
 
 static void dispatch_cmd(const char *cmd)
@@ -52,9 +97,11 @@ static void dispatch_cmd(const char *cmd)
         event_bus_publish(SYS_EVT_CMD_START);
     } else if (strcmp(buf, "stop") == 0) {
         event_bus_publish(SYS_EVT_CMD_STOP);
+    } else if (strcmp(buf, "status") == 0) {
+        write_status();
     } else {
         LOG_WARN(MOD, "Unknown command: '%s'", buf);
-        LOG_INFO(MOD, "Valid commands: start | stop");
+        LOG_INFO(MOD, "Valid commands: start | stop | status");
     }
 }
 
@@ -92,6 +139,7 @@ int control_init(void)
 {
     g_ctrl.running = 1;
     g_ctrl.fifo_fd = -1;
+    g_ctrl.current_state = 0;
     resolve_runtime_paths();
 
     if (mkfifo(g_ctrl.cmd_fifo, 0666) < 0 && errno != EEXIST) {
@@ -100,8 +148,12 @@ int control_init(void)
     }
     chmod(g_ctrl.cmd_fifo, 0666);
 
+    write_status(); /* initial write */
+    event_bus_subscribe(on_sys_event, NULL);
+
     pthread_create(&g_ctrl.thread, NULL, ctrl_thread, NULL);
     LOG_INFO(MOD, "Control FIFO ready: %s", g_ctrl.cmd_fifo);
+    LOG_INFO(MOD, "Status file ready: %s", g_ctrl.status_file);
     return 0;
 }
 
@@ -113,5 +165,6 @@ void control_deinit(void)
     if (fd >= 0) close(fd);
     pthread_join(g_ctrl.thread, NULL);
     unlink(g_ctrl.cmd_fifo);
+    unlink(g_ctrl.status_file);
     LOG_INFO(MOD, "Control FIFO closed");
 }
