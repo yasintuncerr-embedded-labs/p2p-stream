@@ -101,6 +101,9 @@ int profile_load(DeviceProfile *p, const char *profiles_dir, const char *device)
     /* [network] */
     p->rtp_pt_h265  = kf_int(kf, "network", "rtp_pt_h265",  96);
     p->rtp_pt_h264  = kf_int(kf, "network", "rtp_pt_h264",  97);
+    
+    p->fec_percentage = kf_int(kf, "network", "fec_percentage", 0);
+    p->fec_pt         = kf_int(kf, "network", "fec_pt", 122);
     p->stream_port  = kf_int(kf, "network", "stream_port",  5600);
     p->rtsp_port    = kf_int(kf, "network", "rtsp_port",    8554);
 

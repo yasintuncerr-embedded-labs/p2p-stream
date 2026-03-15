@@ -64,6 +64,10 @@ typedef struct {
     int  rtp_pt_h265;   /* default 96 */
     int  rtp_pt_h264;   /* default 97 */
 
+    /* Forward Error Correction (FEC) */
+    int  fec_percentage; /* default 0, experimental */
+    int  fec_pt;         /* default 122 */
+
     /* Network — UDP / RTP tuning */
     char peer_ip_host  [64];    /* peer address when role=host          */
     char peer_ip_client[64];    /* peer address when role=client        */
