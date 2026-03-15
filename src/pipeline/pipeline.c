@@ -9,7 +9,6 @@
 #include <pthread.h>
 
 #define MOD              "PIPELINE"
-#define STATS_PERIOD_MS  2000
 
 /* -----------------------------------------------------------------------
  * Internal context
@@ -24,6 +23,7 @@ struct PipelineCtx {
 
     /* Stats */
     guint64          bytes_processed;
+    guint64          last_bytes;
     gdouble          bitrate_kbps;
     GTimer          *stats_timer;
     guint            stats_timeout_id;
@@ -123,6 +123,66 @@ static gboolean on_bus_message(GstBus *bus, GstMessage *msg, gpointer data)
     return TRUE;
 }
 
+static GstPadProbeReturn stats_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer user_data)
+{
+    (void)pad;
+    PipelineCtx *ctx = (PipelineCtx *)user_data;
+    GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+    if (buf) {
+        ctx->bytes_processed += gst_buffer_get_size(buf);
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+static void add_stats_probe(PipelineCtx *ctx)
+{
+    GstIterator *it = gst_bin_iterate_elements(GST_BIN(ctx->pipeline));
+    GValue item = G_VALUE_INIT;
+    gboolean done = FALSE;
+    GstElement *target_elem = NULL;
+
+    while (!done) {
+        switch (gst_iterator_next(it, &item)) {
+            case GST_ITERATOR_OK: {
+                GstElement *elem = g_value_get_object(&item);
+                GstElementFactory *f = gst_element_get_factory(elem);
+                if (f) {
+                    const gchar *fname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f));
+                    if (g_strcmp0(fname, "udpsink") == 0 || g_strcmp0(fname, "udpsrc") == 0) {
+                        target_elem = g_object_ref(elem);
+                        done = TRUE;
+                    }
+                }
+                g_value_reset(&item);
+                break;
+            }
+            case GST_ITERATOR_RESYNC:
+                gst_iterator_resync(it);
+                break;
+            case GST_ITERATOR_ERROR:
+            case GST_ITERATOR_DONE:
+                done = TRUE;
+                break;
+        }
+    }
+    gst_iterator_free(it);
+
+    if (target_elem) {
+        GstPad *pad = NULL;
+        GstElementFactory *f = gst_element_get_factory(target_elem);
+        if (f) {
+            const gchar *fname = gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(f));
+            if (g_strcmp0(fname, "udpsink") == 0)      pad = gst_element_get_static_pad(target_elem, "sink");
+            else if (g_strcmp0(fname, "udpsrc") == 0)  pad = gst_element_get_static_pad(target_elem, "src");
+        }
+        if (pad) {
+            gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, stats_probe_cb, ctx, NULL);
+            gst_object_unref(pad);
+        }
+        gst_object_unref(target_elem);
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Stats timer callback
  * --------------------------------------------------------------------- */
@@ -131,26 +191,16 @@ static gboolean stats_timer_cb(gpointer data)
     PipelineCtx *ctx = (PipelineCtx *)data;
     if (!ctx->pipeline) return FALSE;
 
-    GstQuery *q = gst_query_new_position(GST_FORMAT_BYTES);
-    guint64   bytes_now = 0;
-
-    if (gst_element_query(ctx->pipeline, q)) {
-        gint64 pos = 0;
-        gst_query_parse_position(q, NULL, &pos);
-        bytes_now = (guint64)pos;
-    }
-    gst_query_unref(q);
-
     gdouble elapsed = g_timer_elapsed(ctx->stats_timer, NULL);
-    if (elapsed > 0 && bytes_now > ctx->bytes_processed) {
-        guint64 delta = bytes_now - ctx->bytes_processed;
+    if (elapsed > 0) {
+        guint64 delta = ctx->bytes_processed - ctx->last_bytes;
         ctx->bitrate_kbps = (gdouble)(delta * 8) / (elapsed * 1000.0);
-        ctx->bytes_processed = bytes_now;
+        ctx->last_bytes = ctx->bytes_processed;
         g_timer_reset(ctx->stats_timer);
     }
 
     if (ctx->on_stats)
-        ctx->on_stats(ctx, ctx->bytes_processed, bytes_now,
+        ctx->on_stats(ctx, ctx->bytes_processed, ctx->bytes_processed,
                       ctx->bitrate_kbps, ctx->userdata);
     return TRUE;
 }
@@ -194,6 +244,10 @@ PipelineCtx *pipeline_create(const StreamConfig *cfg,
         return NULL;
     }
 
+    if (cfg->role == ROLE_SENDER) {
+        pipeline_set_bitrate(ctx, cfg->bitrate_bps);
+    }
+
     ctx->loop       = g_main_loop_new(NULL, FALSE);
     ctx->bus        = gst_element_get_bus(ctx->pipeline);
     ctx->bus_watch_id = gst_bus_add_watch(ctx->bus, on_bus_message, ctx);
@@ -201,8 +255,10 @@ PipelineCtx *pipeline_create(const StreamConfig *cfg,
 
     ctx->loop_thread = g_thread_new("gst-bus", loop_thread_func, ctx->loop);
 
+    add_stats_probe(ctx);
+
     ctx->stats_timer      = g_timer_new();
-    ctx->stats_timeout_id = g_timeout_add(STATS_PERIOD_MS, stats_timer_cb, ctx);
+    ctx->stats_timeout_id = g_timeout_add(cfg->profile.pipe_stats_period_ms, stats_timer_cb, ctx);
 
     LOG_INFO(MOD, "Pipeline created [%s] codec=%s sink=%d",
              cfg->role == ROLE_SENDER ? "SENDER" : "RECEIVER",
@@ -258,13 +314,25 @@ int pipeline_set_bitrate(PipelineCtx *ctx, int bitrate_bps)
     CodecType cod = ctx->cfg.codec;
     int enc_bitrate = p->enc_bitrate_unit_kbps ? (bitrate_bps / 1000) : bitrate_bps;
 
-    GstElement *enc = gst_bin_get_by_name(GST_BIN(ctx->pipeline),
-                                           p->enc_element[cod]);
-    if (!enc)
-        enc = gst_bin_get_by_interface(GST_BIN(ctx->pipeline), GST_TYPE_PRESET);
+    GstElement *enc = gst_bin_get_by_name(GST_BIN(ctx->pipeline), "encoder");
+    if (!enc) {
+        enc = gst_bin_get_by_name(GST_BIN(ctx->pipeline), p->enc_element[cod]);
+        if (!enc)
+            enc = gst_bin_get_by_interface(GST_BIN(ctx->pipeline), GST_TYPE_PRESET);
+    }
 
     if (enc) {
-        g_object_set(enc, "bitrate", enc_bitrate, NULL);
+        int is_v4l2 = (strncmp(p->enc_element[cod], "v4l2", 4) == 0);
+        if (is_v4l2) {
+            GstStructure *s = NULL;
+            g_object_get(enc, "extra-controls", &s, NULL);
+            if (!s) s = gst_structure_new_empty("controls");
+            gst_structure_set(s, "video_bitrate", G_TYPE_INT, enc_bitrate, NULL);
+            g_object_set(enc, "extra-controls", s, NULL);
+            gst_structure_free(s);
+        } else {
+            g_object_set(enc, "bitrate", enc_bitrate, NULL);
+        }
         gst_object_unref(enc);
         LOG_INFO(MOD, "Bitrate updated to %d bps", bitrate_bps);
         return 0;
