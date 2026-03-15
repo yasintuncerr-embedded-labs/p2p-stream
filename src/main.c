@@ -362,7 +362,13 @@ int main(int argc, char *argv[])
     LOG_INFO("MAIN", "Shutting down...");
     net_monitor_deinit();
     control_deinit();
-    sm_destroy(g_sm);
+    
+    pthread_mutex_lock(&g_main_lock);
+    StreamSM *sm_tmp = g_sm;
+    g_sm = NULL;
+    pthread_mutex_unlock(&g_main_lock);
+    
+    sm_destroy(sm_tmp);
     event_bus_deinit();
     gst_deinit();
     logger_deinit();
