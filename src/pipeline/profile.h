@@ -6,7 +6,7 @@
  * Drives GStreamer element selection per platform.
  * --------------------------------------------------------------------- */
 
-#define PROFILE_STR_MAX 128
+#define PROFILE_STR_MAX 256
 
 typedef enum {
     CODEC_H265 = 0,
@@ -64,11 +64,27 @@ typedef struct {
     int  rtp_pt_h265;   /* default 96 */
     int  rtp_pt_h264;   /* default 97 */
 
+    /* Forward Error Correction (FEC) */
+    int  fec_percentage; /* default 0, experimental */
+    int  fec_pt;         /* default 122 */
+
     /* Network — UDP / RTP tuning */
     char peer_ip_host  [64];    /* peer address when role=host          */
     char peer_ip_client[64];    /* peer address when role=client        */
     int  stream_port;           /* default 5600                         */
     int  rtsp_port;             /* default 8554                         */
+
+    int  net_retries;           /* default 3 */
+    int  net_timeout_ms;        /* default 1000 */
+    int  net_mtu;               /* default 1316 */
+
+    int  sm_max_retries;        /* default 5 */
+    int  sm_backoff_base_s;     /* default 2 */
+
+    int  pipe_stats_period_ms;  /* default 2000 */
+    int  pipe_h265_config_interval; /* default -1 */
+    int  pipe_h264_config_interval; /* default -1 */
+    int  pipe_pay_config_interval;  /* default 1 */
 
     /* UDP receive socket buffer size in bytes.
      * Increase on lossy links to absorb burst drops.

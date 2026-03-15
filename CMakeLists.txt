@@ -30,6 +30,7 @@ pkg_check_modules(GST_RTSP IMPORTED_TARGET gstreamer-rtsp-server-1.0)
 set(SOURCES
     src/main.c
     src/logger.c
+    src/event_bus.c
     src/state_machine.c
     src/net_monitor.c
     src/control.c

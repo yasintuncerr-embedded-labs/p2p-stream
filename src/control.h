@@ -1,9 +1,7 @@
 #ifndef P2P_CONTROL_H
 #define P2P_CONTROL_H
 
-#include "state_machine.h"
-
-int  control_init  (StreamSM *sm);
+int  control_init(void);
 void control_deinit(void);
 
-#endif
+#endif /* P2P_CONTROL_H */

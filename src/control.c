@@ -1,6 +1,6 @@
 #include "control.h"
 #include "logger.h"
-#include "state_machine.h"
+#include "event_bus.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,14 +17,13 @@
 #define FALLBACK_RUN_DIR "/tmp"
 #define BUF_SZ       256
 
-
 static struct {
-    StreamSM        *sm;
     pthread_t        thread;
-    int              running;
+    volatile int     running;
     int              fifo_fd;
     char             cmd_fifo[128];
     char             status_file[128];
+    int              current_state; /* Tracks SmState approximation */
 } g_ctrl;
 
 static void resolve_runtime_paths(void)
@@ -41,16 +40,12 @@ static void resolve_runtime_paths(void)
     snprintf(g_ctrl.status_file, sizeof(g_ctrl.status_file), "%s/p2p-stream.status", run_dir);
 }
 
-
 /* -----------------------------------------------------------------------
  * Status JSON writer
  * --------------------------------------------------------------------- */
 
- static void write_status(void)
+static void write_status(void)
 {
-    SmState st = sm_get_state(g_ctrl.sm);
-
-    /* Get current time */
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     struct tm tm_info;
@@ -61,26 +56,34 @@ static void resolve_runtime_paths(void)
     FILE *fp = fopen(g_ctrl.status_file, "w");
     if (!fp) return;
 
+    /* state 0 = IDLE, state 1 = STREAMING, state 2 = ERROR */
+    const char *state_str = (g_ctrl.current_state == 1) ? "STREAMING" :
+                            (g_ctrl.current_state == 2) ? "ERROR" : "IDLE";
+
     fprintf(fp,
             "{\n"
             "  \"timestamp\": \"%s\",\n"
             "  \"stream_state\": \"%s\",\n"
             "  \"stream_state_id\": %d\n"
             "}\n",
-            tbuf,
-            sm_state_name(st),
-            (int)st);
+            tbuf, state_str, g_ctrl.current_state);
 
     fclose(fp);
 }
 
+static void on_sys_event(SysEvent evt, void *userdata)
+{
+    (void)userdata;
+    int prev = g_ctrl.current_state;
+    if (evt == SYS_EVT_STREAM_STARTED) g_ctrl.current_state = 1;
+    else if (evt == SYS_EVT_STREAM_STOPPED) g_ctrl.current_state = 0;
+    else if (evt == SYS_EVT_STREAM_ERROR) g_ctrl.current_state = 2;
+    
+    if (prev != g_ctrl.current_state) write_status();
+}
 
-/* -----------------------------------------------------------------------
- * Command dispatcher
- * --------------------------------------------------------------------- */
 static void dispatch_cmd(const char *cmd)
 {
-    /* strip trailing whitespace/newline */
     char buf[BUF_SZ];
     strncpy(buf, cmd, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
@@ -91,9 +94,9 @@ static void dispatch_cmd(const char *cmd)
     LOG_INFO(MOD, "CMD: '%s'", buf);
 
     if (strcmp(buf, "start") == 0) {
-        sm_post_event(g_ctrl.sm, SM_EVT_START);
+        event_bus_publish(SYS_EVT_CMD_START);
     } else if (strcmp(buf, "stop") == 0) {
-        sm_post_event(g_ctrl.sm, SM_EVT_STOP);
+        event_bus_publish(SYS_EVT_CMD_STOP);
     } else if (strcmp(buf, "status") == 0) {
         write_status();
     } else {
@@ -102,17 +105,12 @@ static void dispatch_cmd(const char *cmd)
     }
 }
 
-
-/* -----------------------------------------------------------------------
- * FIFO reader thread
- * --------------------------------------------------------------------- */
 static void *ctrl_thread(void *arg)
 {
     (void)arg;
     char line[BUF_SZ];
 
     while (g_ctrl.running) {
-        /* Re-open FIFO each iteration (readers block until writer opens) */
         g_ctrl.fifo_fd = open(g_ctrl.cmd_fifo, O_RDONLY);
         if (g_ctrl.fifo_fd < 0) {
             LOG_ERROR(MOD, "Cannot open FIFO %s: %s", g_ctrl.cmd_fifo, strerror(errno));
@@ -122,10 +120,9 @@ static void *ctrl_thread(void *arg)
 
         while (g_ctrl.running) {
             ssize_t n = read(g_ctrl.fifo_fd, line, sizeof(line) - 1);
-            if (n <= 0) break;  /* EOF = writer closed, reopen */
+            if (n <= 0) break;
             line[n] = '\0';
 
-            /* Handle multiple commands in one write */
             char *tok = strtok(line, "\n");
             while (tok) {
                 if (strlen(tok) > 0) dispatch_cmd(tok);
@@ -138,31 +135,25 @@ static void *ctrl_thread(void *arg)
     return NULL;
 }
 
-
-
-/* -----------------------------------------------------------------------
- * Public API
- * --------------------------------------------------------------------- */
-int control_init(StreamSM *sm)
+int control_init(void)
 {
-    g_ctrl.sm      = sm;
     g_ctrl.running = 1;
     g_ctrl.fifo_fd = -1;
+    g_ctrl.current_state = 0;
     resolve_runtime_paths();
 
-    /* Create FIFO if not exists */
     if (mkfifo(g_ctrl.cmd_fifo, 0666) < 0 && errno != EEXIST) {
         LOG_ERROR(MOD, "mkfifo(%s) failed: %s", g_ctrl.cmd_fifo, strerror(errno));
         return -1;
     }
     chmod(g_ctrl.cmd_fifo, 0666);
 
-    /* Initial status */
-    write_status();
+    write_status(); /* initial write */
+    event_bus_subscribe(on_sys_event, NULL);
 
     pthread_create(&g_ctrl.thread, NULL, ctrl_thread, NULL);
     LOG_INFO(MOD, "Control FIFO ready: %s", g_ctrl.cmd_fifo);
-    LOG_INFO(MOD, "Status file: %s", g_ctrl.status_file);
+    LOG_INFO(MOD, "Status file ready: %s", g_ctrl.status_file);
     return 0;
 }
 
@@ -170,7 +161,6 @@ void control_deinit(void)
 {
     g_ctrl.running = 0;
     if (g_ctrl.fifo_fd >= 0) close(g_ctrl.fifo_fd);
-    /* Unblock thread by opening the FIFO briefly */
     int fd = open(g_ctrl.cmd_fifo, O_WRONLY | O_NONBLOCK);
     if (fd >= 0) close(fd);
     pthread_join(g_ctrl.thread, NULL);
