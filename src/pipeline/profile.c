@@ -104,6 +104,18 @@ int profile_load(DeviceProfile *p, const char *profiles_dir, const char *device)
     p->stream_port  = kf_int(kf, "network", "stream_port",  5600);
     p->rtsp_port    = kf_int(kf, "network", "rtsp_port",    8554);
 
+    p->net_retries    = kf_int(kf, "network", "retries", 3);
+    p->net_timeout_ms = kf_int(kf, "network", "timeout_ms", 1000);
+    p->net_mtu        = kf_int(kf, "network", "mtu", 1316);
+
+    p->sm_max_retries = kf_int(kf, "network", "sm_max_retries", 5);
+    p->sm_backoff_base_s = kf_int(kf, "network", "sm_backoff_base_s", 2);
+
+    p->pipe_stats_period_ms = kf_int(kf, "network", "pipe_stats_period_ms", 2000);
+    p->pipe_h265_config_interval = kf_int(kf, "network", "pipe_h265_config_interval", -1);
+    p->pipe_h264_config_interval = kf_int(kf, "network", "pipe_h264_config_interval", -1);
+    p->pipe_pay_config_interval  = kf_int(kf, "network", "pipe_pay_config_interval", 1);
+
     kf_str(kf, "network", "peer_ip_host",   p->peer_ip_host,   sizeof(p->peer_ip_host),   "192.168.77.1");
     kf_str(kf, "network", "peer_ip_client", p->peer_ip_client, sizeof(p->peer_ip_client), "192.168.77.2");
 

@@ -70,6 +70,18 @@ typedef struct {
     int  stream_port;           /* default 5600                         */
     int  rtsp_port;             /* default 8554                         */
 
+    int  net_retries;           /* default 3 */
+    int  net_timeout_ms;        /* default 1000 */
+    int  net_mtu;               /* default 1316 */
+
+    int  sm_max_retries;        /* default 5 */
+    int  sm_backoff_base_s;     /* default 2 */
+
+    int  pipe_stats_period_ms;  /* default 2000 */
+    int  pipe_h265_config_interval; /* default -1 */
+    int  pipe_h264_config_interval; /* default -1 */
+    int  pipe_pay_config_interval;  /* default 1 */
+
     /* UDP receive socket buffer size in bytes.
      * Increase on lossy links to absorb burst drops.
      * Requires net.core.rmem_max >= this value (set via sysctl).
