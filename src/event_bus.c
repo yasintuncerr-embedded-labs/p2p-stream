@@ -21,6 +21,7 @@ static struct {
 
     Subscriber      subs[MAX_SUBSCRIBERS];
     int             num_subs;
+    pthread_mutex_t sub_lock;
 
     pthread_t       thread;
     int             running;
@@ -61,10 +62,12 @@ static void *bus_thread(void *arg)
         pthread_mutex_unlock(&g_bus.q_lock);
 
         LOG_DEBUG(MOD, "Dispatching: %s", evt_name(evt));
+        pthread_mutex_lock(&g_bus.sub_lock);
         for (int i = 0; i < g_bus.num_subs; i++) {
             if (g_bus.subs[i].cb)
                 g_bus.subs[i].cb(evt, g_bus.subs[i].userdata);
         }
+        pthread_mutex_unlock(&g_bus.sub_lock);
     }
     LOG_INFO(MOD, "Event bus thread exiting");
     return NULL;
@@ -77,6 +80,7 @@ int event_bus_init(void)
     g_bus.q_head = g_bus.q_tail = g_bus.q_count = 0;
 
     pthread_mutex_init(&g_bus.q_lock, NULL);
+    pthread_mutex_init(&g_bus.sub_lock, NULL);
     pthread_cond_init (&g_bus.q_cond, NULL);
     pthread_create(&g_bus.thread, NULL, bus_thread, NULL);
     return 0;
@@ -92,6 +96,7 @@ void event_bus_deinit(void)
 
     pthread_join(g_bus.thread, NULL);
     pthread_mutex_destroy(&g_bus.q_lock);
+    pthread_mutex_destroy(&g_bus.sub_lock);
     pthread_cond_destroy(&g_bus.q_cond);
 }
 
@@ -116,7 +121,7 @@ int event_bus_subscribe(SysEventCb cb, void *userdata)
 {
     if (!cb) return -1;
     int ret = -1;
-    pthread_mutex_lock(&g_bus.q_lock);
+    pthread_mutex_lock(&g_bus.sub_lock);
     if (g_bus.num_subs < MAX_SUBSCRIBERS) {
         g_bus.subs[g_bus.num_subs].cb = cb;
         g_bus.subs[g_bus.num_subs].userdata = userdata;
@@ -125,6 +130,6 @@ int event_bus_subscribe(SysEventCb cb, void *userdata)
     } else {
         LOG_WARN(MOD, "Max subscribers reached");
     }
-    pthread_mutex_unlock(&g_bus.q_lock);
+    pthread_mutex_unlock(&g_bus.sub_lock);
     return ret;
 }
