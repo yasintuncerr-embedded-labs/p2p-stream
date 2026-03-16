@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <time.h>
 #include <errno.h>
+#include <limits.h>
 
 #define MOD          "CTRL"
 #define DEFAULT_RUN_DIR "/run"
@@ -53,7 +54,10 @@ static void write_status(void)
     char tbuf[32];
     strftime(tbuf, sizeof(tbuf), "%Y-%m-%dT%H:%M:%SZ", &tm_info);
 
-    FILE *fp = fopen(g_ctrl.status_file, "w");
+    char tmp_path[PATH_MAX];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", g_ctrl.status_file);
+
+    FILE *fp = fopen(tmp_path, "w");
     if (!fp) return;
 
     /* state 0 = IDLE, state 1 = STREAMING, state 2 = ERROR */
@@ -69,6 +73,9 @@ static void write_status(void)
             tbuf, state_str, g_ctrl.current_state);
 
     fclose(fp);
+    if (rename(tmp_path, g_ctrl.status_file) != 0) {
+        unlink(tmp_path);
+    }
 }
 
 static void on_sys_event(SysEvent evt, void *userdata)
@@ -137,16 +144,24 @@ static void *ctrl_thread(void *arg)
 
 int control_init(void)
 {
+    struct stat st;
+
     g_ctrl.running = 1;
     g_ctrl.fifo_fd = -1;
     g_ctrl.current_state = 0;
     resolve_runtime_paths();
 
-    if (mkfifo(g_ctrl.cmd_fifo, 0666) < 0 && errno != EEXIST) {
+    if (mkfifo(g_ctrl.cmd_fifo, 0660) < 0 && errno != EEXIST) {
         LOG_ERROR(MOD, "mkfifo(%s) failed: %s", g_ctrl.cmd_fifo, strerror(errno));
         return -1;
     }
-    chmod(g_ctrl.cmd_fifo, 0666);
+    if (stat(g_ctrl.cmd_fifo, &st) != 0 || !S_ISFIFO(st.st_mode)) {
+        LOG_ERROR(MOD, "Control path is not a FIFO: %s", g_ctrl.cmd_fifo);
+        return -1;
+    }
+    if (chmod(g_ctrl.cmd_fifo, 0660) != 0) {
+        LOG_WARN(MOD, "Failed to set FIFO mode 0660: %s", strerror(errno));
+    }
 
     write_status(); /* initial write */
     event_bus_subscribe(on_sys_event, NULL);

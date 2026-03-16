@@ -13,6 +13,7 @@
 
 struct StreamSM {
     SmState          state;
+    pthread_mutex_t  state_lock;
     StreamConfig     cfg;
     SmStateChangeCb  on_state;
     void            *userdata;
@@ -87,6 +88,7 @@ static void enter_streaming(StreamSM *sm)
     }
 
     if (pipeline_start(sm->pipeline) != 0) {
+        stop_pipeline(sm);
         sm_post_event(sm, SM_EVT_PIPELINE_FAIL);
         return;
     }
@@ -120,8 +122,13 @@ static const Transition s_trans[SM_STATE_COUNT][SM_EVT_COUNT] = {
 
 static void transition(StreamSM *sm, SmState next, void (*action)(StreamSM *))
 {
-    SmState old = sm->state;
-    sm->state   = next;
+    SmState old;
+
+    pthread_mutex_lock(&sm->state_lock);
+    old = sm->state;
+    sm->state = next;
+    pthread_mutex_unlock(&sm->state_lock);
+
     LOG_INFO(MOD, "[ %s ] → [ %s ]", sm_state_name(old), sm_state_name(next));
     if (action) action(sm);
     if (sm->on_state) sm->on_state(old, next, sm->userdata);
@@ -130,6 +137,7 @@ static void transition(StreamSM *sm, SmState next, void (*action)(StreamSM *))
 static void *sm_thread(void *arg)
 {
     StreamSM *sm = (StreamSM *)arg;
+    SmState cur;
 
     LOG_INFO(MOD, "SM thread started — role=%s",
              sm->cfg.role == ROLE_SENDER ? "sender" : "receiver");
@@ -146,13 +154,17 @@ static void *sm_thread(void *arg)
         sm->q_count--;
         pthread_mutex_unlock(&sm->q_lock);
 
-        LOG_DEBUG(MOD, "Event: %s (state=%s)",
-                  sm_event_name(evt), sm_state_name(sm->state));
+        pthread_mutex_lock(&sm->state_lock);
+        cur = sm->state;
+        pthread_mutex_unlock(&sm->state_lock);
 
-        const Transition *t = &s_trans[sm->state][evt];
+        LOG_DEBUG(MOD, "Event: %s (state=%s)",
+                  sm_event_name(evt), sm_state_name(cur));
+
+        const Transition *t = &s_trans[cur][evt];
         if (t->next == (SmState)-1) {
             LOG_WARN(MOD, "Ignored event %s in state %s",
-                     sm_event_name(evt), sm_state_name(sm->state));
+                     sm_event_name(evt), sm_state_name(cur));
             continue;
         }
         transition(sm, t->next, t->action);
@@ -173,6 +185,7 @@ StreamSM *sm_create(const StreamConfig *cfg, SmStateChangeCb on_state, void *use
     sm->userdata = userdata;
     sm->running  = 1;
 
+    pthread_mutex_init(&sm->state_lock, NULL);
     pthread_mutex_init(&sm->q_lock, NULL);
     pthread_cond_init (&sm->q_cond, NULL);
     pthread_create(&sm->thread, NULL, sm_thread, sm);
@@ -194,6 +207,7 @@ void sm_destroy(StreamSM *sm)
     if (sm->pipeline) {
         pipeline_destroy(sm->pipeline);
     }
+    pthread_mutex_destroy(&sm->state_lock);
     pthread_mutex_destroy(&sm->q_lock);
     pthread_cond_destroy (&sm->q_cond);
     free(sm);
@@ -201,8 +215,20 @@ void sm_destroy(StreamSM *sm)
 
 int sm_post_event(StreamSM *sm, SmEvent evt)
 {
+    int prev_idx;
+
     if (!sm) return -1;
     pthread_mutex_lock(&sm->q_lock);
+
+    /* Avoid repeated producer bursts for START/STOP transitions. */
+    if ((evt == SM_EVT_START || evt == SM_EVT_STOP) && sm->q_count > 0) {
+        prev_idx = (sm->q_tail - 1 + EVENT_QUEUE_SIZE) % EVENT_QUEUE_SIZE;
+        if (sm->queue[prev_idx] == evt) {
+            pthread_mutex_unlock(&sm->q_lock);
+            return 0;
+        }
+    }
+
     if (sm->q_count >= EVENT_QUEUE_SIZE) {
         LOG_WARN(MOD, "Event queue full, dropping %s", sm_event_name(evt));
         pthread_mutex_unlock(&sm->q_lock);
@@ -218,6 +244,11 @@ int sm_post_event(StreamSM *sm, SmEvent evt)
 
 SmState sm_get_state(StreamSM *sm)
 {
+    SmState s;
+
     if (!sm) return SM_STATE_IDLE;
-    return sm->state;
+    pthread_mutex_lock(&sm->state_lock);
+    s = sm->state;
+    pthread_mutex_unlock(&sm->state_lock);
+    return s;
 }

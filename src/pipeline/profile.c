@@ -4,8 +4,20 @@
 #include <glib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #define MOD "PROFILE"
+
+static int valid_device_selector(const char *device)
+{
+    if (!device || !device[0]) return 0;
+    for (const char *p = device; *p; ++p) {
+        if (!(isalnum((unsigned char)*p) || *p == '_' || *p == '-')) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 /* -----------------------------------------------------------------------
  * Helper: read string from key file with fallback
@@ -47,6 +59,14 @@ static int kf_bool(GKeyFile *kf, const char *grp, const char *key, int fallback)
 int profile_load(DeviceProfile *p, const char *profiles_dir, const char *device)
 {
     if (!p || !profiles_dir || !device) return -1;
+    if (!valid_device_selector(device)) {
+        LOG_ERROR(MOD, "Invalid device selector: '%s'", device ? device : "");
+        return -1;
+    }
+    if (strstr(profiles_dir, "..") != NULL) {
+        LOG_ERROR(MOD, "Invalid profiles_dir contains '..': %s", profiles_dir);
+        return -1;
+    }
     memset(p, 0, sizeof(*p));
 
     char path[512];

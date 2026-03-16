@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(p2p-stream C)
 
+include(CTest)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -83,3 +85,13 @@ install(FILES systemd/p2p-stream.service
 message(STATUS "GStreamer version : ${GST_VERSION}")
 message(STATUS "GLib    version   : ${GLIB_VERSION}")
 message(STATUS "Install prefix    : ${CMAKE_INSTALL_PREFIX}")
+
+if(BUILD_TESTING)
+    add_test(
+        NAME pc_smoke
+        COMMAND ${CMAKE_SOURCE_DIR}/tests/pc_smoke.sh
+                ${CMAKE_BINARY_DIR}/p2p-stream
+                ${CMAKE_SOURCE_DIR}/device-profiles
+                ${CMAKE_BINARY_DIR}/test-artifacts/pc-smoke
+    )
+endif()

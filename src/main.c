@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <pthread.h>
+#include <errno.h>
+#include <limits.h>
+#include <ctype.h>
+#include <sys/stat.h>
 
 #include "logger.h"
 #include "state_machine.h"
@@ -36,24 +40,126 @@ static int g_net_is_up = 0;
 static int g_retry_count = 0;
 static int g_in_recovery = 0;
 static pthread_t g_recovery_thread;
+static int g_recovery_thread_active = 0;
+static int g_recovery_thread_joinable = 0;
+static volatile sig_atomic_t g_signal_stop_requested = 0;
+
+static void reap_recovery_thread_if_done_locked(void)
+{
+    if (g_recovery_thread_joinable && !g_recovery_thread_active) {
+        pthread_t tid = g_recovery_thread;
+        g_recovery_thread_joinable = 0;
+        pthread_mutex_unlock(&g_main_lock);
+        pthread_join(tid, NULL);
+        pthread_mutex_lock(&g_main_lock);
+    }
+}
+
+static void copy_trunc(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    strncpy(dst, src, dst_sz - 1);
+    dst[dst_sz - 1] = '\0';
+}
+
+static int is_valid_device_name(const char *name)
+{
+    if (!name || !name[0]) return 0;
+    for (const char *p = name; *p; ++p) {
+        if (!(isalnum((unsigned char)*p) || *p == '_' || *p == '-')) return 0;
+    }
+    return 1;
+}
+
+static int parse_int_strict(const char *s, int *out)
+{
+    char *end = NULL;
+    long v;
+
+    if (!s || !out || s[0] == '\0') return -1;
+    errno = 0;
+    v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return -1;
+    if (v < INT_MIN || v > INT_MAX) return -1;
+    *out = (int)v;
+    return 0;
+}
+
+static int validate_runtime_inputs(const StreamConfig *cfg,
+                                   const char *device,
+                                   const char *profiles_dir)
+{
+    struct stat st;
+    if (!is_valid_device_name(device)) {
+        fprintf(stderr, "Error: invalid --device '%s' (allowed: [A-Za-z0-9_-])\n", device ? device : "");
+        return -1;
+    }
+
+    if (!profiles_dir || profiles_dir[0] == '\0') {
+        fprintf(stderr, "Error: --profiles must not be empty\n");
+        return -1;
+    }
+    if (strstr(profiles_dir, "..") != NULL) {
+        fprintf(stderr, "Error: --profiles path must not contain '..'\n");
+        return -1;
+    }
+    if (stat(profiles_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        fprintf(stderr, "Error: --profiles path is not a readable directory: %s\n", profiles_dir);
+        return -1;
+    }
+
+    if (cfg->width < 160 || cfg->width > 7680 ||
+        cfg->height < 120 || cfg->height > 4320) {
+        fprintf(stderr, "Error: width/height out of range (width:160-7680, height:120-4320)\n");
+        return -1;
+    }
+    if (cfg->fps < 1 || cfg->fps > 240) {
+        fprintf(stderr, "Error: fps out of range (1-240)\n");
+        return -1;
+    }
+    if (cfg->bitrate_bps < 100000 || cfg->bitrate_bps > 200000000) {
+        fprintf(stderr, "Error: bitrate out of range (100000-200000000 bps)\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int compute_backoff_s(const StreamConfig *cfg, int retry_count)
+{
+    int shift = retry_count;
+    int backoff;
+
+    if (shift < 0) shift = 0;
+    if (shift > 10) shift = 10;
+
+    backoff = cfg->profile.sm_backoff_base_s * (1 << shift);
+    if (backoff > 3600) backoff = 3600;
+    if (backoff < 1) backoff = 1;
+    return backoff;
+}
 
 static void sig_handler(int sig)
 {
     (void)sig;
     static const char msg[] = "\np2p-stream: caught signal, stopping...\n";
     write(STDERR_FILENO, msg, sizeof(msg) - 1);
-    event_bus_publish(SYS_EVT_QUIT);
+    g_signal_stop_requested = 1;
 }
 
 static void *recovery_thread(void *arg) {
     StreamConfig *cfg = (StreamConfig *)arg;
     
     pthread_mutex_lock(&g_main_lock);
-    int backoff = cfg->profile.sm_backoff_base_s * (1 << g_retry_count);
+    int backoff = compute_backoff_s(cfg, g_retry_count);
     
     if (g_retry_count >= cfg->profile.sm_max_retries) {
         LOG_FATAL("MAIN", "Max retries reached. Giving up.");
         g_in_recovery = 0;
+        g_recovery_thread_active = 0;
         pthread_mutex_unlock(&g_main_lock);
         return NULL;
     }
@@ -70,17 +176,20 @@ static void *recovery_thread(void *arg) {
     
     if (!g_main_running) {
         g_in_recovery = 0;
+        g_recovery_thread_active = 0;
         pthread_mutex_unlock(&g_main_lock);
         return NULL;
     }
     
     g_retry_count++;
     
-    if (g_net_is_up) {
+    StreamSM *sm = g_sm;
+    if (g_net_is_up && sm) {
         LOG_INFO("MAIN", "Recovery backoff complete. Restarting stream.");
-        sm_post_event(g_sm, SM_EVT_START);
+        sm_post_event(sm, SM_EVT_START);
     }
     g_in_recovery = 0;
+    g_recovery_thread_active = 0;
     pthread_mutex_unlock(&g_main_lock);
     return NULL;
 }
@@ -89,14 +198,16 @@ static void *recovery_thread(void *arg) {
 static void on_sys_event(SysEvent evt, void *userdata)
 {
     StreamConfig *cfg = (StreamConfig *)userdata;
+    SmState cur_state;
 
     pthread_mutex_lock(&g_main_lock);
+    cur_state = g_sm ? sm_get_state(g_sm) : SM_STATE_IDLE;
 
     switch (evt) {
         case SYS_EVT_NET_UP:
             g_net_is_up = 1;
             g_retry_count = 0;
-            if (cfg->trigger == TRIGGER_AUTO) {
+            if (cfg->trigger == TRIGGER_AUTO && cur_state != SM_STATE_STREAMING) {
                 LOG_INFO("MAIN", "Network UP -> starting stream");
                 sm_post_event(g_sm, SM_EVT_START);
             }
@@ -104,20 +215,24 @@ static void on_sys_event(SysEvent evt, void *userdata)
 
         case SYS_EVT_NET_DOWN:
             g_net_is_up = 0;
-            LOG_INFO("MAIN", "Network DOWN -> stopping stream");
-            sm_post_event(g_sm, SM_EVT_STOP);
+            if (cur_state == SM_STATE_STREAMING || cur_state == SM_STATE_ERROR) {
+                LOG_INFO("MAIN", "Network DOWN -> stopping stream");
+                sm_post_event(g_sm, SM_EVT_STOP);
+            }
             /* interrupt recovery sleep if ongoing */
             pthread_cond_signal(&g_recovery_cond);
             break;
 
         case SYS_EVT_CMD_START:
             LOG_INFO("MAIN", "Manual START command received");
-            sm_post_event(g_sm, SM_EVT_START);
+            if (cur_state != SM_STATE_STREAMING)
+                sm_post_event(g_sm, SM_EVT_START);
             break;
 
         case SYS_EVT_CMD_STOP:
             LOG_INFO("MAIN", "Manual STOP command received");
-            sm_post_event(g_sm, SM_EVT_STOP);
+            if (cur_state == SM_STATE_STREAMING || cur_state == SM_STATE_ERROR)
+                sm_post_event(g_sm, SM_EVT_STOP);
             /* user-requested stop should break any recovery */
             pthread_cond_signal(&g_recovery_cond);
             break;
@@ -129,11 +244,18 @@ static void on_sys_event(SysEvent evt, void *userdata)
         case SYS_EVT_STREAM_ERROR:
             LOG_ERROR("MAIN", "Stream error received -> initiating recovery if auto");
             sm_post_event(g_sm, SM_EVT_STOP);
-            if (cfg->trigger == TRIGGER_AUTO && g_net_is_up && !g_in_recovery) {
+            if (cfg->trigger == TRIGGER_AUTO && g_net_is_up && !g_in_recovery && !g_recovery_thread_active) {
+                reap_recovery_thread_if_done_locked();
                 g_in_recovery = 1;
-                /* we must safely join previous thread before creating a new one */
-                pthread_create(&g_recovery_thread, NULL, recovery_thread, cfg);
-                pthread_detach(g_recovery_thread);
+                g_recovery_thread_active = 1;
+                if (pthread_create(&g_recovery_thread, NULL, recovery_thread, cfg) != 0) {
+                    LOG_ERROR("MAIN", "Failed to create recovery thread");
+                    g_in_recovery = 0;
+                    g_recovery_thread_active = 0;
+                    g_recovery_thread_joinable = 0;
+                } else {
+                    g_recovery_thread_joinable = 1;
+                }
             }
             break;
 
@@ -255,7 +377,7 @@ int main(int argc, char *argv[])
             else { fprintf(stderr, "Unknown role: %s (use sender|receiver)\n", optarg); return 1; }
             stream_role_set = 1;
             break;
-        case 'd': strncpy(device, optarg, sizeof(device) - 1);  break;
+        case 'd': copy_trunc(device, sizeof(device), optarg);  break;
         case 'c':
             if      (strcmp(optarg, "h265") == 0) cfg.codec = CODEC_H265;
             else if (strcmp(optarg, "h264") == 0) cfg.codec = CODEC_H264;
@@ -274,14 +396,14 @@ int main(int argc, char *argv[])
             else if (strcmp(optarg, "gpio")   == 0) cfg.trigger = TRIGGER_GPIO;
             else { fprintf(stderr, "Unknown trigger: %s\n", optarg); return 1; }
             break;
-        case 'W': cfg.width       = atoi(optarg); break;
-        case 'H': cfg.height      = atoi(optarg); break;
-        case 'f': cfg.fps         = atoi(optarg); break;
-        case 'b': cfg.bitrate_bps = atoi(optarg); break;
-        case 'o': strncpy(cfg.file_path, optarg, sizeof(cfg.file_path) - 1); break;
-        case 'p': strncpy(cfg.peer_ip,   optarg, sizeof(cfg.peer_ip)   - 1); break;
-        case 'P': strncpy(profiles_dir,  optarg, sizeof(profiles_dir)  - 1); break;
-        case 'l': strncpy(log_file,      optarg, sizeof(log_file)      - 1); break;
+        case 'W': if (parse_int_strict(optarg, &cfg.width) != 0) { fprintf(stderr, "Invalid --width: %s\n", optarg); return 1; } break;
+        case 'H': if (parse_int_strict(optarg, &cfg.height) != 0) { fprintf(stderr, "Invalid --height: %s\n", optarg); return 1; } break;
+        case 'f': if (parse_int_strict(optarg, &cfg.fps) != 0) { fprintf(stderr, "Invalid --fps: %s\n", optarg); return 1; } break;
+        case 'b': if (parse_int_strict(optarg, &cfg.bitrate_bps) != 0) { fprintf(stderr, "Invalid --bitrate: %s\n", optarg); return 1; } break;
+        case 'o': copy_trunc(cfg.file_path, sizeof(cfg.file_path), optarg); break;
+        case 'p': copy_trunc(cfg.peer_ip, sizeof(cfg.peer_ip), optarg); break;
+        case 'P': copy_trunc(profiles_dir, sizeof(profiles_dir), optarg); break;
+        case 'l': copy_trunc(log_file, sizeof(log_file), optarg); break;
         case 'T': cfg.use_test_pattern = 1; break;
         case 'v': verbose = 1;  break;
         case 'h': usage(argv[0]); return 0;
@@ -301,6 +423,8 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: --role is required (sender|receiver)\n\n");
         usage(argv[0]); return 1;
     }
+    if (validate_runtime_inputs(&cfg, device, profiles_dir) != 0)
+        return 1;
 
     /* ── Init logger ─────────────────────────────────────────────── */
     logger_init("p2p-stream", log_file,
@@ -354,12 +478,39 @@ int main(int argc, char *argv[])
     LOG_INFO("MAIN", "MainController Running.");
 
     /* Wait for shutdown */
-    while (g_main_running) {
-        pause(); 
+    while (1) {
+        if (g_signal_stop_requested) {
+            pthread_mutex_lock(&g_main_lock);
+            g_signal_stop_requested = 0;
+            pthread_mutex_unlock(&g_main_lock);
+            event_bus_publish(SYS_EVT_QUIT);
+        }
+
+        pthread_mutex_lock(&g_main_lock);
+        int running = g_main_running;
+        pthread_mutex_unlock(&g_main_lock);
+        if (!running) break;
+
+        sleep(1);
     }
 
     /* ── Cleanup ──────────────────────────────────────────────────── */
     LOG_INFO("MAIN", "Shutting down...");
+    int join_recovery = 0;
+    pthread_t recovery_tid;
+
+    pthread_mutex_lock(&g_main_lock);
+    pthread_cond_signal(&g_recovery_cond);
+    join_recovery = g_recovery_thread_joinable;
+    recovery_tid = g_recovery_thread;
+    pthread_mutex_unlock(&g_main_lock);
+
+    if (join_recovery) {
+        pthread_join(recovery_tid, NULL);
+        pthread_mutex_lock(&g_main_lock);
+        g_recovery_thread_joinable = 0;
+        pthread_mutex_unlock(&g_main_lock);
+    }
     net_monitor_deinit();
     control_deinit();
     
