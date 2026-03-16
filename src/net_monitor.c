@@ -84,6 +84,9 @@ static void *net_thread(void *arg)
     (void)arg;
     const char *peer = resolve_peer_ip(&g_net.cfg);
     const DeviceProfile *p = &g_net.cfg.profile;
+    int up_streak = 0;
+    int down_streak = 0;
+    const int stable_checks = 2;
 
     LOG_INFO(MOD, "Network monitor started — checking %s via %s",
              peer, p->iface);
@@ -103,11 +106,19 @@ static void *net_thread(void *arg)
 
         if (!g_net.running) break;
 
-        if (reachable && !g_net.is_up) {
+        if (reachable) {
+            up_streak++;
+            down_streak = 0;
+        } else {
+            down_streak++;
+            up_streak = 0;
+        }
+
+        if (up_streak >= stable_checks && !g_net.is_up) {
             LOG_INFO(MOD, "Peer %s is UP", peer);
             g_net.is_up = 1;
             event_bus_publish(SYS_EVT_NET_UP);
-        } else if (!reachable && g_net.is_up) {
+        } else if (down_streak >= stable_checks && g_net.is_up) {
             LOG_WARN(MOD, "Peer %s went DOWN", peer);
             g_net.is_up = 0;
             event_bus_publish(SYS_EVT_NET_DOWN);

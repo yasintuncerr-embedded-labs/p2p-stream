@@ -41,7 +41,19 @@ static int g_retry_count = 0;
 static int g_in_recovery = 0;
 static pthread_t g_recovery_thread;
 static int g_recovery_thread_active = 0;
+static int g_recovery_thread_joinable = 0;
 static volatile sig_atomic_t g_signal_stop_requested = 0;
+
+static void reap_recovery_thread_if_done_locked(void)
+{
+    if (g_recovery_thread_joinable && !g_recovery_thread_active) {
+        pthread_t tid = g_recovery_thread;
+        g_recovery_thread_joinable = 0;
+        pthread_mutex_unlock(&g_main_lock);
+        pthread_join(tid, NULL);
+        pthread_mutex_lock(&g_main_lock);
+    }
+}
 
 static void copy_trunc(char *dst, size_t dst_sz, const char *src)
 {
@@ -186,14 +198,16 @@ static void *recovery_thread(void *arg) {
 static void on_sys_event(SysEvent evt, void *userdata)
 {
     StreamConfig *cfg = (StreamConfig *)userdata;
+    SmState cur_state;
 
     pthread_mutex_lock(&g_main_lock);
+    cur_state = g_sm ? sm_get_state(g_sm) : SM_STATE_IDLE;
 
     switch (evt) {
         case SYS_EVT_NET_UP:
             g_net_is_up = 1;
             g_retry_count = 0;
-            if (cfg->trigger == TRIGGER_AUTO) {
+            if (cfg->trigger == TRIGGER_AUTO && cur_state != SM_STATE_STREAMING) {
                 LOG_INFO("MAIN", "Network UP -> starting stream");
                 sm_post_event(g_sm, SM_EVT_START);
             }
@@ -201,20 +215,24 @@ static void on_sys_event(SysEvent evt, void *userdata)
 
         case SYS_EVT_NET_DOWN:
             g_net_is_up = 0;
-            LOG_INFO("MAIN", "Network DOWN -> stopping stream");
-            sm_post_event(g_sm, SM_EVT_STOP);
+            if (cur_state == SM_STATE_STREAMING || cur_state == SM_STATE_ERROR) {
+                LOG_INFO("MAIN", "Network DOWN -> stopping stream");
+                sm_post_event(g_sm, SM_EVT_STOP);
+            }
             /* interrupt recovery sleep if ongoing */
             pthread_cond_signal(&g_recovery_cond);
             break;
 
         case SYS_EVT_CMD_START:
             LOG_INFO("MAIN", "Manual START command received");
-            sm_post_event(g_sm, SM_EVT_START);
+            if (cur_state != SM_STATE_STREAMING)
+                sm_post_event(g_sm, SM_EVT_START);
             break;
 
         case SYS_EVT_CMD_STOP:
             LOG_INFO("MAIN", "Manual STOP command received");
-            sm_post_event(g_sm, SM_EVT_STOP);
+            if (cur_state == SM_STATE_STREAMING || cur_state == SM_STATE_ERROR)
+                sm_post_event(g_sm, SM_EVT_STOP);
             /* user-requested stop should break any recovery */
             pthread_cond_signal(&g_recovery_cond);
             break;
@@ -227,12 +245,16 @@ static void on_sys_event(SysEvent evt, void *userdata)
             LOG_ERROR("MAIN", "Stream error received -> initiating recovery if auto");
             sm_post_event(g_sm, SM_EVT_STOP);
             if (cfg->trigger == TRIGGER_AUTO && g_net_is_up && !g_in_recovery && !g_recovery_thread_active) {
+                reap_recovery_thread_if_done_locked();
                 g_in_recovery = 1;
                 g_recovery_thread_active = 1;
                 if (pthread_create(&g_recovery_thread, NULL, recovery_thread, cfg) != 0) {
                     LOG_ERROR("MAIN", "Failed to create recovery thread");
                     g_in_recovery = 0;
                     g_recovery_thread_active = 0;
+                    g_recovery_thread_joinable = 0;
+                } else {
+                    g_recovery_thread_joinable = 1;
                 }
             }
             break;
@@ -456,25 +478,38 @@ int main(int argc, char *argv[])
     LOG_INFO("MAIN", "MainController Running.");
 
     /* Wait for shutdown */
-    while (g_main_running) {
-        pause();
+    while (1) {
         if (g_signal_stop_requested) {
             pthread_mutex_lock(&g_main_lock);
             g_signal_stop_requested = 0;
             pthread_mutex_unlock(&g_main_lock);
             event_bus_publish(SYS_EVT_QUIT);
         }
+
+        pthread_mutex_lock(&g_main_lock);
+        int running = g_main_running;
+        pthread_mutex_unlock(&g_main_lock);
+        if (!running) break;
+
+        sleep(1);
     }
 
     /* ── Cleanup ──────────────────────────────────────────────────── */
     LOG_INFO("MAIN", "Shutting down...");
     int join_recovery = 0;
+    pthread_t recovery_tid;
+
     pthread_mutex_lock(&g_main_lock);
     pthread_cond_signal(&g_recovery_cond);
-    join_recovery = g_recovery_thread_active;
+    join_recovery = g_recovery_thread_joinable;
+    recovery_tid = g_recovery_thread;
     pthread_mutex_unlock(&g_main_lock);
+
     if (join_recovery) {
-        pthread_join(g_recovery_thread, NULL);
+        pthread_join(recovery_tid, NULL);
+        pthread_mutex_lock(&g_main_lock);
+        g_recovery_thread_joinable = 0;
+        pthread_mutex_unlock(&g_main_lock);
     }
     net_monitor_deinit();
     control_deinit();

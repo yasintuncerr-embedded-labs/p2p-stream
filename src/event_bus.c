@@ -41,6 +41,17 @@ static const char *evt_name(SysEvent e) {
     }
 }
 
+static int evt_is_critical(SysEvent e)
+{
+    return (e == SYS_EVT_QUIT || e == SYS_EVT_CMD_STOP || e == SYS_EVT_NET_DOWN);
+}
+
+static int evt_should_dedupe(SysEvent e)
+{
+    return (e == SYS_EVT_NET_UP || e == SYS_EVT_NET_DOWN ||
+            e == SYS_EVT_STREAM_STARTED || e == SYS_EVT_STREAM_STOPPED);
+}
+
 static void *bus_thread(void *arg)
 {
     (void)arg;
@@ -102,13 +113,52 @@ void event_bus_deinit(void)
 
 int event_bus_publish(SysEvent evt)
 {
+    int prev_idx;
+    int found = 0;
+
     if (!g_bus.running && evt != SYS_EVT_QUIT) return -1;
     pthread_mutex_lock(&g_bus.q_lock);
-    if (g_bus.q_count >= BUS_QUEUE_SIZE) {
-        LOG_WARN(MOD, "Queue full, dropping %s", evt_name(evt));
-        pthread_mutex_unlock(&g_bus.q_lock);
-        return -1;
+
+    /* Avoid queue churn for repeated state-like events. */
+    if (evt_should_dedupe(evt) && g_bus.q_count > 0) {
+        prev_idx = (g_bus.q_tail - 1 + BUS_QUEUE_SIZE) % BUS_QUEUE_SIZE;
+        if (g_bus.queue[prev_idx] == evt) {
+            pthread_mutex_unlock(&g_bus.q_lock);
+            return 0;
+        }
     }
+
+    if (g_bus.q_count >= BUS_QUEUE_SIZE) {
+        if (!evt_is_critical(evt)) {
+            LOG_WARN(MOD, "Queue full, dropping %s", evt_name(evt));
+            pthread_mutex_unlock(&g_bus.q_lock);
+            return -1;
+        }
+
+        /* Preserve critical events by evicting oldest non-critical item. */
+        for (int i = 0; i < g_bus.q_count; ++i) {
+            int idx = (g_bus.q_head + i) % BUS_QUEUE_SIZE;
+            if (!evt_is_critical(g_bus.queue[idx])) {
+                found = 1;
+                for (int j = i; j < g_bus.q_count - 1; ++j) {
+                    int from = (g_bus.q_head + j + 1) % BUS_QUEUE_SIZE;
+                    int to = (g_bus.q_head + j) % BUS_QUEUE_SIZE;
+                    g_bus.queue[to] = g_bus.queue[from];
+                }
+                g_bus.q_tail = (g_bus.q_tail - 1 + BUS_QUEUE_SIZE) % BUS_QUEUE_SIZE;
+                g_bus.q_count--;
+                LOG_WARN(MOD, "Queue full, evicted non-critical event for %s", evt_name(evt));
+                break;
+            }
+        }
+
+        if (!found) {
+            g_bus.q_head = (g_bus.q_head + 1) % BUS_QUEUE_SIZE;
+            g_bus.q_count--;
+            LOG_WARN(MOD, "Queue full, evicted oldest critical event to keep %s", evt_name(evt));
+        }
+    }
+
     g_bus.queue[g_bus.q_tail] = evt;
     g_bus.q_tail = (g_bus.q_tail + 1) % BUS_QUEUE_SIZE;
     g_bus.q_count++;

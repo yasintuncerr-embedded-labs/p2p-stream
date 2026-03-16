@@ -87,6 +87,7 @@ static void enter_streaming(StreamSM *sm)
     }
 
     if (pipeline_start(sm->pipeline) != 0) {
+        stop_pipeline(sm);
         sm_post_event(sm, SM_EVT_PIPELINE_FAIL);
         return;
     }

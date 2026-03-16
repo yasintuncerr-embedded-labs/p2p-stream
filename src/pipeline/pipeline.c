@@ -176,10 +176,12 @@ static void add_stats_probe(PipelineCtx *ctx)
             else if (g_strcmp0(fname, "udpsrc") == 0)  pad = gst_element_get_static_pad(target_elem, "src");
         }
         if (pad) {
+            const gchar *pad_name = gst_pad_get_name(pad);
+            const gchar *elem_name = gst_element_get_name(target_elem);
             gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, stats_probe_cb, ctx, NULL);
-            gst_object_unref(pad);
             LOG_DEBUG(MOD, "Added stats probe to %s pad of %s", 
-                      gst_pad_get_name(pad), gst_element_get_name(target_elem));
+                      pad_name ? pad_name : "?", elem_name ? elem_name : "?");
+            gst_object_unref(pad);
         } else {
             LOG_WARN(MOD, "Found target element %s, but failed to retrieve pad", 
                      gst_element_get_name(target_elem));
@@ -272,11 +274,16 @@ PipelineCtx *pipeline_create(const StreamConfig *cfg,
 
 int pipeline_start(PipelineCtx *ctx)
 {
+    GstStateChangeReturn wait_ret;
+
     if (!ctx || !ctx->pipeline) return -1;
     
     /* Safely apply bitrate while the pipeline is in READY state,
      * as V4L2 encoders often fail to accept controls in NULL state. */
-    gst_element_set_state(ctx->pipeline, GST_STATE_READY);
+    if (gst_element_set_state(ctx->pipeline, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE) {
+        LOG_ERROR(MOD, "Failed to set pipeline to READY");
+        return -1;
+    }
     if (ctx->cfg.role == ROLE_SENDER) {
         pipeline_set_bitrate(ctx, ctx->cfg.bitrate_bps);
     }
@@ -288,6 +295,14 @@ int pipeline_start(PipelineCtx *ctx)
     }
     LOG_INFO(MOD, "Pipeline PLAYING (async=%s)",
              ret == GST_STATE_CHANGE_ASYNC ? "yes" : "no");
+
+    wait_ret = gst_element_get_state(ctx->pipeline, NULL, NULL, 5 * GST_SECOND);
+    if (wait_ret == GST_STATE_CHANGE_FAILURE || wait_ret == GST_STATE_CHANGE_ASYNC) {
+        LOG_ERROR(MOD, "Pipeline did not reach PLAYING within timeout");
+        gst_element_set_state(ctx->pipeline, GST_STATE_NULL);
+        return -1;
+    }
+
     g_timer_reset(ctx->stats_timer);
     return 0;
 }
@@ -355,6 +370,11 @@ int pipeline_set_bitrate(PipelineCtx *ctx, int bitrate_bps)
 void pipeline_destroy(PipelineCtx *ctx)
 {
     if (!ctx) return;
+
+    if (ctx->bus_watch_id) {
+        g_source_remove(ctx->bus_watch_id);
+        ctx->bus_watch_id = 0;
+    }
 
     if (ctx->stats_timeout_id)
         g_source_remove(ctx->stats_timeout_id);
