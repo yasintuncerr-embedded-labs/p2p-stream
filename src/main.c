@@ -291,7 +291,7 @@ static void usage(const char *prog)
         "        Camera device  : --net-role sta --role sender\n"
         "        Display device : --net-role ap  --role receiver\n\n"
         "Other options:\n"
-        "  -d, --device      <nxp|jetson|rpi4|pc>   (required)\n"
+        "  -d, --device      <nxp|jetson|rpi4|pi_zero2w|pc|macos>   (required)\n"
         "  -c, --codec       <h265|h264>              (default: h264)\n"
         "  -s, --sink        <hdmi|display|file|rtsp> (default: hdmi)\n"
         "  -t, --trigger     <auto|manual|gpio>       (default: auto)\n"
