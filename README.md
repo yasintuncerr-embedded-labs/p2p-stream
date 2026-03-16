@@ -112,21 +112,20 @@ Note:
 - Confirm `device-index` with `gst-device-monitor-1.0 Video/Source`.
 - Use `SENDER_IP` and `RECEIVER_IP` based on your current network.
 
-## C) Linux <-> Linux (GStreamer only, no p2p-stream)
+## C) NXP sender -> Linux receiver
 
-Linux sender (test pattern):
+Run sender on NXP (p2p-stream):
 
 ```bash
-gst-launch-1.0 -v \
-  videotestsrc is-live=true pattern=ball ! \
-  video/x-raw,width=1280,height=720,framerate=30/1 ! \
-  x264enc tune=zerolatency bitrate=4000 speed-preset=ultrafast key-int-max=30 ! \
-  h264parse config-interval=-1 ! \
-  rtph264pay config-interval=1 pt=97 mtu=1316 ! \
-  udpsink host=RECEIVER_IP port=5600 sync=false async=false
+p2p-stream --net-role sta --role sender \
+  --device nxp --codec h264 \
+  --trigger auto \
+  --peer-ip "${RECEIVER_IP}" \
+  --profiles /etc/p2p-stream/device-profiles \
+  --verbose
 ```
 
-Linux receiver:
+Run receiver on Linux (GStreamer):
 
 ```bash
 gst-launch-1.0 -v \
@@ -136,33 +135,20 @@ gst-launch-1.0 -v \
   rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink sync=false
 ```
 
-## D) Windows <-> Windows (GStreamer only, no p2p-stream)
+## D) Linux sender -> NXP receiver
 
-Windows sender (PowerShell, test pattern):
+Run receiver on NXP (p2p-stream):
 
-```powershell
-gst-launch-1.0 -v `
-  videotestsrc is-live=true pattern=ball ! `
-  video/x-raw,width=1280,height=720,framerate=30/1 ! `
-  x264enc tune=zerolatency bitrate=4000 speed-preset=ultrafast key-int-max=30 ! `
-  h264parse config-interval=-1 ! `
-  rtph264pay config-interval=1 pt=97 mtu=1316 ! `
-  udpsink host=RECEIVER_IP port=5600 sync=false async=false
+```bash
+p2p-stream --net-role sta --role receiver \
+  --device nxp --codec h264 \
+  --trigger auto \
+  --peer-ip "${SENDER_IP}" \
+  --profiles /etc/p2p-stream/device-profiles \
+  --verbose
 ```
 
-Windows receiver (PowerShell):
-
-```powershell
-gst-launch-1.0 -v `
-  udpsrc port=5600 buffer-size=8388608 do-timestamp=true `
-  caps="application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=97" ! `
-  rtpjitterbuffer latency=50 drop-on-latency=true ! `
-  rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! d3d11videosink sync=false
-```
-
-## E) Cross-platform camera sender examples (GStreamer only)
-
-Linux webcam sender:
+Run sender on Linux (GStreamer, webcam):
 
 ```bash
 gst-launch-1.0 -v \
@@ -172,10 +158,46 @@ gst-launch-1.0 -v \
   x264enc tune=zerolatency bitrate=4000 speed-preset=ultrafast key-int-max=30 ! \
   h264parse config-interval=-1 ! \
   rtph264pay config-interval=1 pt=97 mtu=1316 ! \
-  udpsink host=RECEIVER_IP port=5600 sync=false
+  udpsink host="${RECEIVER_IP}" port=5600 sync=false async=false
 ```
 
-Windows camera sender (PowerShell):
+## E) NXP sender -> Windows receiver
+
+Run sender on NXP (p2p-stream):
+
+```bash
+p2p-stream --net-role sta --role sender \
+  --device nxp --codec h264 \
+  --trigger auto \
+  --peer-ip "${RECEIVER_IP}" \
+  --profiles /etc/p2p-stream/device-profiles \
+  --verbose
+```
+
+Run receiver on Windows (PowerShell, GStreamer):
+
+```powershell
+gst-launch-1.0 -v `
+  udpsrc port=5600 buffer-size=8388608 do-timestamp=true `
+  caps="application/x-rtp,media=video,clock-rate=90000,encoding-name=H264,payload=97" ! `
+  rtpjitterbuffer latency=50 drop-on-latency=true ! `
+  rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! d3d11videosink sync=false
+```
+
+## F) Windows sender -> NXP receiver
+
+Run receiver on NXP (p2p-stream):
+
+```bash
+p2p-stream --net-role sta --role receiver \
+  --device nxp --codec h264 \
+  --trigger auto \
+  --peer-ip "${SENDER_IP}" \
+  --profiles /etc/p2p-stream/device-profiles \
+  --verbose
+```
+
+Run sender on Windows (PowerShell, GStreamer):
 
 ```powershell
 gst-launch-1.0 -v `
@@ -185,8 +207,18 @@ gst-launch-1.0 -v `
   x264enc tune=zerolatency bitrate=4000 speed-preset=ultrafast key-int-max=30 ! `
   h264parse config-interval=-1 ! `
   rtph264pay config-interval=1 pt=97 mtu=1316 ! `
-  udpsink host=RECEIVER_IP port=5600 sync=false
+  udpsink host="${RECEIVER_IP}" port=5600 sync=false async=false
 ```
+
+## GStreamer differences by platform
+
+Pipeline logic is mostly the same (`H264 -> RTP -> UDP`). Platform differences are mainly source/sink elements:
+
+- macOS sender source: `avfvideosrc`
+- Linux sender source: `v4l2src`
+- Windows sender source: `ksvideosrc`
+- macOS/Linux receiver sink: `autovideosink`
+- Windows receiver sink: `d3d11videosink`
 
 ## Troubleshooting
 
