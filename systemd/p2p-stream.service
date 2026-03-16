@@ -10,6 +10,9 @@ ConditionPathExists=/run/p2p-connected
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/video-node
+User=p2p-stream
+Group=p2p-stream
+UMask=007
 
 # ExecStart is built from environment variables set by video-node.env
 # or overridden here. Defaults: host, nxp, h265, hdmi, auto trigger.
@@ -50,8 +53,11 @@ LimitMEMLOCK=infinity
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/log /run /tmp
-PrivateTmp=false
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/log /run/p2p-stream
 
 [Install]
 WantedBy=multi-user.target
