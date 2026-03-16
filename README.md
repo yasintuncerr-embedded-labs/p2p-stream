@@ -9,7 +9,46 @@ This repository now includes:
 
 ## Setup
 
-### 1) Build p2p-stream (Linux/macOS)
+### 1) Prerequisites
+
+If you see `cmake: command not found`, install prerequisites first.
+
+Debian/Ubuntu (including Raspberry Pi OS 64-bit):
+
+```bash
+sudo apt update
+sudo apt install -y \
+  cmake pkg-config build-essential gdb \
+  libglib2.0-dev \
+  libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav \
+  libgstrtspserver-1.0-dev
+```
+
+macOS (Homebrew):
+
+```bash
+brew update
+brew install cmake pkg-config glib gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly libav
+```
+
+Quick tool checks:
+
+```bash
+cmake --version
+gcc --version
+gdb --version
+pkg-config --modversion gstreamer-1.0 glib-2.0
+gst-launch-1.0 --version
+```
+
+### 2) Build p2p-stream (Linux/macOS)
 
 ```bash
 cmake -S . -B build
@@ -22,7 +61,7 @@ Binary path after build:
 ./build/p2p-stream
 ```
 
-### 2) Profiles
+### 3) Profiles
 
 Default profile directory on target systems:
 
@@ -36,7 +75,7 @@ Local development profile directory:
 ./device-profiles
 ```
 
-### 3) Quick local validation (device-independent)
+### 4) Quick local validation (device-independent)
 
 ```bash
 ctest --test-dir build --output-on-failure -R pc_smoke
