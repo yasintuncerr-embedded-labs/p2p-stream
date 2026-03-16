@@ -75,6 +75,23 @@ Local development profile directory:
 ./device-profiles
 ```
 
+Sink tuning keys (optional, per profile in `[sink]`):
+
+- `hdmi_caps` / `display_caps`: adds `video/x-raw,...` before sink (for width/height/framerate constraints).
+- `hdmi_extra` / `display_extra`: appends sink element properties.
+
+Example:
+
+```ini
+[sink]
+hdmi = kmssink
+hdmi_caps = width=1920,height=1080,framerate=60/1
+hdmi_extra = force-modesetting=true
+display = autovideosink
+display_caps =
+display_extra =
+```
+
 ### 4) Quick local validation (device-independent)
 
 ```bash
