@@ -1,2 +1,6 @@
 # Ignore build directory
 build/
+
+# Local development noise
+.DS_Store
+p2p-stream.log
