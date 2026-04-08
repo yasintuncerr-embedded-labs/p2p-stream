@@ -10,8 +10,11 @@ ConditionPathExists=/run/p2p-connected
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/video-node
-User=p2p-stream
-Group=p2p-stream
+Environment="GST_REGISTRY_1_0=/run/p2p-stream/registry.bin"
+Environment="GST_PLUGIN_SCANNER_1_0=/usr/libexec/gstreamer-1.0/gst-plugin-scanner"
+Environment="HOME=/run/p2p-stream"
+#User=p2p-stream
+#Group=p2p-stream
 UMask=007
 
 ExecStart=/bin/bash -c 'exec /usr/bin/p2p-stream \
